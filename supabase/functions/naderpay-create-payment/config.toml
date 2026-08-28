@@ -1,0 +1,2 @@
+[functions.naderpay-create-payment]
+verify_jwt = false
