@@ -36,6 +36,14 @@ jobs:
       - name: Install dependencies
         run: pnpm install
 
+      - name: Patch deprecated jcenter() in react-native-get-sms-android
+        run: |
+          FILE="node_modules/react-native-get-sms-android/android/build.gradle"
+          if [ -f "$FILE" ]; then
+            sed -i 's/jcenter()/mavenCentral()/g' "$FILE"
+            echo "Patched jcenter in $FILE"
+          fi
+
       - name: Prebuild Android
         run: pnpm exec expo prebuild --platform android
 
