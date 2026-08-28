@@ -50,7 +50,7 @@ const DEFAULT_SETTINGS: AgentSettings = {
   pollingIntervalMs: 30_000,
   maxAmountTolerance: 0.01,
   autoConfirm: true,
-  enabled: true,
+  enabled: false,
   maxSearchWindowHours: 24,
   autoRejectPolicy: 'on_expiry',
   retryPolicy: 'exponential',
