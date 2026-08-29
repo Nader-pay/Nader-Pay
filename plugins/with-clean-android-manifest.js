@@ -9,6 +9,8 @@ const { withAndroidManifest } = require('expo/config-plugins');
 module.exports = function withCleanAndroidManifest(config) {
   return withAndroidManifest(config, (config) => {
     const manifest = config.modResults;
+
+    // 1. Remove maxSdkVersion from <uses-sdk> if any merged config added it
     if (manifest.manifest['uses-sdk']) {
       for (const sdk of manifest.manifest['uses-sdk']) {
         if (sdk.$) {
@@ -17,6 +19,18 @@ module.exports = function withCleanAndroidManifest(config) {
         }
       }
     }
+
+    // 2. Convert invalid tools:replace="android:maxSdkVersion" on storage permissions
+    // to tools:remove="android:maxSdkVersion". This keeps the permission but removes
+    // the library-supplied maxSdkVersion attribute, so the app installs on Android 13+.
+    const perms = manifest.manifest['uses-permission'] || [];
+    for (const perm of perms) {
+      if (perm.$ && perm.$['tools:replace'] === 'android:maxSdkVersion') {
+        delete perm.$['tools:replace'];
+        perm.$['tools:remove'] = 'android:maxSdkVersion';
+      }
+    }
+
     return config;
   });
 };
