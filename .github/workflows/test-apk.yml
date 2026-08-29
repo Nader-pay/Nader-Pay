@@ -1,0 +1,78 @@
+name: Build Debug APK for Testing
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  build-debug-apk:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Setup JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android build-tools
+        run: |
+          sdkmanager --install "build-tools;34.0.0"
+          echo "ANDROID_BUILD_TOOLS=$ANDROID_HOME/build-tools/34.0.0" >> "$GITHUB_ENV"
+          echo "$ANDROID_HOME/build-tools/34.0.0" >> "$GITHUB_PATH"
+          echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Patch deprecated jcenter() in react-native-get-sms-android
+        run: |
+          FILE="node_modules/react-native-get-sms-android/android/build.gradle"
+          if [ -f "$FILE" ]; then
+            sed -i 's/jcenter()/mavenCentral()/g' "$FILE"
+            echo "Patched jcenter in $FILE"
+          fi
+
+      - name: Prebuild Android
+        run: pnpm exec expo prebuild --platform android
+
+      - name: Build debug APK
+        run: |
+          cd android
+          ./gradlew --no-daemon assembleDebug
+
+      - name: Verify debug APK
+        run: |
+          APK="android/app/build/outputs/apk/debug/app-debug.apk"
+          if [ ! -f "$APK" ]; then
+            echo "ERROR: debug APK not found"
+            exit 1
+          fi
+          echo "APK size: $(ls -lh "$APK" | awk '{print $5}')"
+          echo "SHA-256: $(sha256sum "$APK" | awk '{print $1}')"
+          aapt2 dump badging "$APK" | head -5
+
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: nader-pay-agent-debug-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
