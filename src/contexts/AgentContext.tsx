@@ -23,6 +23,8 @@ import {
 } from '@/services/deviceRegistration';
 import { parseVodafoneCashSms, createMessageHash } from '@/services/smsParser';
 import { findBestMatch } from '@/services/matchingEngine';
+import { verifyMessageSource } from '@/services/sourceVerification';
+import { indexIncomingMessage } from '@/services/providerSourceService';
 import { requestSmsPermission, checkSmsPermission, readExistingVodafoneCashMessages } from '@/services/smsReader';
 import {
   cacheOrders,
@@ -293,6 +295,28 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
 
   const handleMessage = useCallback(
     async (message: SmsMessage, currentSettings = settings, currentDevice = deviceState) => {
+      // فهرسة الرسالة الواردة لمساعدة نظام توثيق المصادر
+      await indexIncomingMessage({
+        messageId: message.id,
+        originatingAddress: message.originatingAddress,
+        body: message.body,
+        date: message.date,
+      });
+
+      // التحقق من مصدر الرسالة قبل المعالجة
+      const sourceCheck = await verifyMessageSource(message, 'vodafone_cash');
+      if (!sourceCheck.ok) {
+        await logVerification(
+          '',
+          'sms_source_unverified',
+          'rejected',
+          sourceCheck.reason ?? 'مصدر غير موثّق',
+          { originatingAddress: message.originatingAddress },
+          null
+        );
+        return;
+      }
+
       const transaction = parseVodafoneCashSms(message.body);
       if (!transaction) return;
 

@@ -1,3 +1,5 @@
+/* eslint-disable */
+/* global require, module, process, __dirname */
 const fs = require('fs');
 const path = require('path');
 

@@ -1,3 +1,5 @@
+/* eslint-disable */
+/* global require, module */
 const { withAndroidManifest } = require('expo/config-plugins');
 
 /**
