@@ -58,7 +58,16 @@ jobs:
       - name: Decode release keystore
         run: |
           mkdir -p android/keystore
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "ERROR: KEYSTORE_BASE64 secret is empty"
+            exit 1
+          fi
           echo "$KEYSTORE_BASE64" | base64 -d > android/keystore/naderpay-release.keystore
+          if [ ! -s android/keystore/naderpay-release.keystore ]; then
+            echo "ERROR: decoded keystore is empty"
+            exit 1
+          fi
+          echo "Keystore decoded successfully ($(stat -c%s android/keystore/naderpay-release.keystore) bytes)"
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
 
@@ -71,7 +80,7 @@ jobs:
       - name: Build release APK
         run: |
           cd android
-          ./gradlew assembleRelease
+          ./gradlew --no-daemon assembleRelease
         env:
           KEYSTORE_PATH: ${{ github.workspace }}/android/keystore/naderpay-release.keystore
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
