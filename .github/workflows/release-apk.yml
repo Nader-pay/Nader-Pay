@@ -120,7 +120,7 @@ jobs:
 
           echo "=== aapt2 dump badging ==="
           aapt2 dump badging "$APK" | tee /tmp/badging.txt
-          echo "application_id=$(grep '^package:' /tmp/badging.txt | sed -n "s/.*name='\([^']*\)'.*/\1/p")" >> "$GITHUB_OUTPUT"
+          echo "application_id=$(grep '^package:' /tmp/badging.txt | sed -n "s/^package: name='\([^']*\)'.*$/\1/p")" >> "$GITHUB_OUTPUT"
           echo "version_name=$(grep '^package:' /tmp/badging.txt | sed -n "s/.*versionName='\([^']*\)'.*/\1/p")" >> "$GITHUB_OUTPUT"
           echo "version_code=$(grep '^package:' /tmp/badging.txt | sed -n "s/.*versionCode='\([^']*\)'.*/\1/p")" >> "$GITHUB_OUTPUT"
           echo "min_sdk=$(grep '^sdkVersion:' /tmp/badging.txt | sed -n "s/^sdkVersion:'\([^']*\)'.*/\1/p")" >> "$GITHUB_OUTPUT"
@@ -144,12 +144,13 @@ jobs:
           fi
 
           echo "=== apksigner verify ==="
-          apksigner verify --verbose "$APK" | tee /tmp/apksigner.txt
-          if [ $? -ne 0 ]; then
+          if ! apksigner verify --verbose "$APK" > /tmp/apksigner.txt; then
             echo "ERROR: apksigner verify failed"
+            cat /tmp/apksigner.txt
             exit 1
           fi
-          scheme=$(grep -o 'v[0-9] scheme' /tmp/apksigner.txt | head -1 | awk '{print $1}')
+          cat /tmp/apksigner.txt
+          scheme=$(grep 'Verified using.*: true' /tmp/apksigner.txt | grep -o 'v[0-9][^ ]*' | head -1)
           echo "signing_scheme=$scheme" >> "$GITHUB_OUTPUT"
 
           echo "=== zipalign check ==="
@@ -161,7 +162,7 @@ jobs:
           echo "zipalign_ok=true" >> "$GITHUB_OUTPUT"
 
           echo "=== Manifest snippet ==="
-          aapt2 dump xmltree "$APK" AndroidManifest.xml | head -50
+          aapt2 dump xmltree --file AndroidManifest.xml "$APK" | head -50
 
           echo "=== All verifications passed ==="
 
