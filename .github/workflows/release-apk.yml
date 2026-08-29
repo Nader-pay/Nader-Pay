@@ -55,6 +55,9 @@ jobs:
             echo "Patched jcenter in $FILE"
           fi
 
+      - name: Prebuild Android
+        run: pnpm exec expo prebuild --platform android
+
       - name: Decode release keystore
         run: |
           mkdir -p android/keystore
@@ -68,11 +71,11 @@ jobs:
             exit 1
           fi
           echo "Keystore decoded successfully ($(stat -c%s android/keystore/naderpay-release.keystore) bytes)"
+          keytool -list -keystore android/keystore/naderpay-release.keystore -storepass "$KEYSTORE_PASSWORD" -alias "$KEY_ALIAS" >/dev/null
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
-
-      - name: Prebuild Android
-        run: pnpm exec expo prebuild --platform android
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
 
       - name: Configure universal release build
         run: node scripts/patch-android-release.js
