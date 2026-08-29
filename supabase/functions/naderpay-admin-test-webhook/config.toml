@@ -1,0 +1,2 @@
+[functions.naderpay-admin-test-webhook]
+verify_jwt = false
