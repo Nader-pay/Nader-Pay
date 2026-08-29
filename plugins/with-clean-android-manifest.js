@@ -20,14 +20,20 @@ module.exports = function withCleanAndroidManifest(config) {
       }
     }
 
-    // 2. Convert invalid tools:replace="android:maxSdkVersion" on storage permissions
-    // to tools:remove="android:maxSdkVersion". This keeps the permission but removes
-    // the library-supplied maxSdkVersion attribute, so the app installs on Android 13+.
+    // 2. Remove any library-supplied android:maxSdkVersion from storage permissions.
+    // Leaving the attribute alongside tools:remove causes a manifest-merger conflict.
     const perms = manifest.manifest['uses-permission'] || [];
     for (const perm of perms) {
-      if (perm.$ && perm.$['tools:replace'] === 'android:maxSdkVersion') {
-        delete perm.$['tools:replace'];
-        perm.$['tools:remove'] = 'android:maxSdkVersion';
+      if (perm.$) {
+        if (perm.$['tools:replace'] === 'android:maxSdkVersion') {
+          delete perm.$['tools:replace'];
+        }
+        if (perm.$['android:maxSdkVersion'] !== undefined) {
+          delete perm.$['android:maxSdkVersion'];
+        }
+        if (perm.$['tools:remove'] === 'android:maxSdkVersion') {
+          delete perm.$['tools:remove'];
+        }
       }
     }
 
