@@ -2,22 +2,6 @@ import * as SQLite from 'expo-sqlite';
 
 const IS_WEB = process.env.EXPO_OS === 'web';
 
-async function runSchemaStatements(db: SQLite.SQLiteDatabase, source: string): Promise<void> {
-  const statements = source
-    .split(';')
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0);
-  for (const statement of statements) {
-    // On web, execAsync for a single DDL statement is more reliable than the
-    // multi-statement helper or runAsync for schema setup.
-    if (IS_WEB) {
-      await db.execAsync(`${statement};`);
-    } else {
-      await db.runAsync(statement);
-    }
-  }
-}
-
 const DB_NAME = IS_WEB ? ':memory:' : 'naderpay_agent.db';
 const DB_OPTIONS = IS_WEB ? { useNewConnection: true } : undefined;
 

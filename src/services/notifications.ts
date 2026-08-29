@@ -3,6 +3,10 @@ import { Platform } from 'react-native';
 
 const AGENT_CHANNEL_ID = 'naderpay-agent';
 
+const seenEventIds = new Set<string>();
+let unreadCount = 0;
+let lastClearedAt = 0;
+
 export async function setupNotifications(): Promise<boolean> {
   if (process.env.EXPO_OS === 'web') return false;
 
@@ -46,8 +50,43 @@ export async function requestNotificationPermission(): Promise<boolean> {
   return status === 'granted';
 }
 
-export async function showAgentNotification(title: string, body: string, data?: Record<string, unknown>) {
+export function getUnreadNotificationCount(): number {
+  return unreadCount;
+}
+
+export function markNotificationsAsRead(): void {
+  unreadCount = 0;
+  lastClearedAt = Date.now();
+}
+
+export function clearNotificationHistory(): void {
+  seenEventIds.clear();
+  unreadCount = 0;
+  lastClearedAt = Date.now();
+}
+
+export async function showAgentNotification(
+  title: string,
+  body: string,
+  data?: Record<string, unknown>,
+  eventId?: string
+) {
   if (process.env.EXPO_OS === 'web') return;
+
+  const id = eventId ?? `${title}:${body}`;
+  if (seenEventIds.has(id)) {
+    return;
+  }
+  seenEventIds.add(id);
+
+  // حد أقصى للذاكرة لمنع نمو غير محدود
+  if (seenEventIds.size > 500) {
+    const first = seenEventIds.values().next().value;
+    if (first) seenEventIds.delete(first);
+  }
+
+  unreadCount += 1;
+
   await Notifications.scheduleNotificationAsync({
     content: {
       title,

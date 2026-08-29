@@ -18,6 +18,8 @@ import { findBestMatch } from '@/services/matchingEngine';
 import { requestSmsPermission, checkSmsPermission, readExistingVodafoneCashMessages, readExistingPaymentMessages, incrementalScan } from '@/services/smsReader';
 import { indexSmsMessage, findMatchingSmsInIndex, getLastIndexedSmsAt } from '@/services/localSmsIndex';
 import { runSyncEngine } from '@/services/syncEngine';
+import { startRealtimeSync, stopRealtimeSync } from '@/services/realtimeSync';
+import { verifyMessageSource } from '@/services/sourceVerification';
 import { registerBackgroundSync, unregisterBackgroundSync } from '@/services/backgroundAgent';
 import {
   cacheOrders,
@@ -155,6 +157,8 @@ const DEFAULT_STATE: AgentState = {
     rejected: 0,
     waiting: 0,
     syncPending: 0,
+    duplicate: 0,
+    review: 0,
     total: 0,
   },
 };
@@ -171,7 +175,7 @@ const STATUS_MAP: Record<string, AgentOrderStatus> = {
   EXPIRED: 'expired',
   CANCELLED: 'rejected',
   DEVICE_OFFLINE: 'error',
-  DUPLICATE: 'error',
+  DUPLICATE: 'duplicate',
 };
 
 interface AgentContextType {
@@ -222,9 +226,11 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
     const confirmed = orders.filter((o) => ['confirmed', 'confirmed_local'].includes(o.localStatus ?? '')).length;
     const rejected = orders.filter((o) => ['rejected', 'rejected_local', 'expired'].includes(o.localStatus ?? '')).length;
     const syncPending = orders.filter((o) => ['sync_pending', 'syncing', 'confirmed_local', 'rejected_local'].includes(o.localStatus ?? '')).length;
+    const duplicate = orders.filter((o) => o.localStatus === 'duplicate').length;
+    const review = orders.filter((o) => o.localStatus === 'review_required').length;
     setState((s) => ({
       ...s,
-      stats: { active, confirmed, rejected, waiting, syncPending, total },
+      stats: { active, confirmed, rejected, waiting, syncPending, duplicate, review, total },
       diagnostics: { ...s.diagnostics, activeOrders: active, pendingSyncCount: syncPending },
     }));
   }, []);
@@ -318,7 +324,10 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
 
   const emitNotification = useCallback(async (title: string, body: string, data?: Record<string, unknown>) => {
     if (!settings.notificationsEnabled) return;
-    await showAgentNotification(title, body, data);
+    const eventId = data?.orderId
+      ? `${title}:${body}:${data.orderId}`
+      : `${title}:${body}:${Date.now()}`;
+    await showAgentNotification(title, body, data, eventId as string);
   }, [settings.notificationsEnabled]);
 
   const syncOfflineQueue = useCallback(async () => {
@@ -389,6 +398,15 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
       await indexSmsMessage(message);
       await addTimelineStage('', 'SMS_INDEXED', 'completed', 'تم فهرسة الرسالة محليًا');
       setState((s) => ({ ...s, diagnostics: { ...s.diagnostics, lastSmsAt: message.date } }));
+
+      // التحقق من مصدر الرسالة قبل المعالجة
+      if (currentSettings.requireSourceVerification) {
+        const sourceCheck = verifyMessageSource(message, currentSettings);
+        if (!sourceCheck.ok) {
+          await logVerification('', 'source_untrusted', 'rejected', sourceCheck.reason, undefined, message.id);
+          return;
+        }
+      }
 
       const transaction = parseAnySms(message.body);
       if (!transaction) return;
@@ -892,24 +910,43 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
     };
   }, [monitorNetwork]);
 
-  // بدء/إيقاف polling
+  // بدء/إيقاف polling + realtime sync
   useEffect(() => {
     if (!initDone || !settings.enabled || !deviceState.deviceId || !settings.activeServerProfileId) {
+      stopRealtimeSync();
       if (pollTimer.current) {
-        clearInterval(pollTimer.current);
+        clearInterval(pollTimer.current as unknown as number);
         pollTimer.current = null;
       }
+      setState((s) => ({
+        ...s,
+        isPolling: false,
+        diagnostics: { ...s.diagnostics, realtimeStatus: 'disconnected' },
+      }));
       return;
     }
 
+    setState((s) => ({ ...s, isPolling: true }));
+    startRealtimeSync(
+      (status) => {
+        setState((s) => ({
+          ...s,
+          diagnostics: { ...s.diagnostics, realtimeStatus: status },
+        }));
+      },
+      async () => {
+        await refreshOrders();
+      }
+    );
     refreshOrders();
     pollTimer.current = setInterval(() => {
       refreshOrders();
     }, settings.pollingIntervalMs);
 
     return () => {
+      stopRealtimeSync();
       if (pollTimer.current) {
-        clearInterval(pollTimer.current);
+        clearInterval(pollTimer.current as unknown as number);
         pollTimer.current = null;
       }
     };

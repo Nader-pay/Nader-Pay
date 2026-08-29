@@ -3,12 +3,42 @@ import { ActivityIndicator, Pressable, ScrollView, Text, View } from 'react-nati
 import { useFocusEffect, useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { ArrowRight, Battery, Bell, RefreshCw, Server, Smartphone, Wifi, MessageSquare, Activity } from 'lucide-react-native';
+import {
+  ArrowRight,
+  Battery,
+  Bell,
+  RefreshCw,
+  Server,
+  Smartphone,
+  Wifi,
+  MessageSquare,
+  Activity,
+  AlertCircle,
+  CheckCircle2,
+  XCircle,
+  HelpCircle,
+  ChevronDown,
+  ChevronUp,
+  Globe,
+  Radio,
+  Database,
+  HardDrive,
+} from 'lucide-react-native';
 
 import { useAgent } from '@/contexts/AgentContext';
 import { getActiveServerProfile } from '@/services/serverProfileManager';
 import { getLastBackendRequestMeta } from '@/services/backendConnector';
 import type { ServerProfile } from '@/types/backend';
+
+type StatusItem = {
+  key: string;
+  icon: React.ElementType;
+  label: string;
+  value: string;
+  active: boolean;
+  reason?: string;
+  solution?: string;
+};
 
 export default function DiagnosticsScreen() {
   const router = useRouter();
@@ -19,6 +49,7 @@ export default function DiagnosticsScreen() {
   const [scanning, setScanning] = useState(false);
   const [activeProfile, setActiveProfile] = useState<ServerProfile | null>(null);
   const [lastMeta, setLastMeta] = useState<ReturnType<typeof getLastBackendRequestMeta>>(null);
+  const [expanded, setExpanded] = useState<string | null>(null);
   const d = state.diagnostics;
 
   useFocusEffect(
@@ -28,12 +59,6 @@ export default function DiagnosticsScreen() {
         setActiveProfile(await getActiveServerProfile());
         setLastMeta(getLastBackendRequestMeta());
       })();
-    }, [runDiagnostics])
-  );
-
-  useFocusEffect(
-    useCallback(() => {
-      runDiagnostics();
     }, [runDiagnostics])
   );
 
@@ -59,10 +84,108 @@ export default function DiagnosticsScreen() {
     setTesting(true);
     try {
       await runDiagnostics();
+      setActiveProfile(await getActiveServerProfile());
+      setLastMeta(getLastBackendRequestMeta());
     } finally {
       setTesting(false);
     }
   };
+
+  const systemItems: StatusItem[] = [
+    {
+      key: 'agent',
+      icon: Activity,
+      label: 'حالة الوكيل',
+      value: d.agentRunning ? 'يعمل' : 'متوقف',
+      active: d.agentRunning,
+      reason: 'يتحكم في جلب الطلبات ومطابقة SMS.',
+      solution: d.agentRunning ? 'الوكيل يعمل بشكل طبيعي.' : 'انتقل إلى الإعدادات وفعّل الوكيل.',
+    },
+    {
+      key: 'network',
+      icon: Wifi,
+      label: 'الشبكة',
+      value: d.network === 'ONLINE' ? 'متصل' : 'غير متصل',
+      active: d.network === 'ONLINE',
+      reason: 'الاتصال بالإنترنت مطلوب للمزامنة مع الخادم.',
+      solution: d.network === 'ONLINE' ? 'الاتصال متوفر.' : 'تحقق من WiFi أو بيانات الجوال.',
+    },
+    {
+      key: 'sms',
+      icon: MessageSquare,
+      label: 'قراءة SMS',
+      value: d.smsReady ? 'جاهز' : 'لا يوجد إذن',
+      active: d.smsReady,
+      reason: 'يحتاج الوكيل إذن قراءة الرسائل للعثور على إثبات الدفع.',
+      solution: d.smsReady ? 'الإذن ممنوح.' : 'انتقل إلى الإعدادات > الأذونات واسمح بالرسائل.',
+    },
+    {
+      key: 'notifications',
+      icon: Bell,
+      label: 'الإشعارات',
+      value: d.notifications ? 'مفعلة' : 'معطلة',
+      active: d.notifications,
+      reason: 'تُستخدم لتنبيهك عند تطابق أو خطأ.',
+      solution: d.notifications ? 'الإشعارات مفعلة.' : 'فعّل الإشعارات من إعدادات النظام للتطبيق.',
+    },
+    {
+      key: 'background',
+      icon: Server,
+      label: 'المزامنة في الخلفية',
+      value: d.backgroundAgent ? 'مسجلة' : 'غير مسجلة',
+      active: d.backgroundAgent,
+      reason: 'تجعل المزامنة تستمر عندما لا يكون التطبيق في المقدمة.',
+      solution: d.backgroundAgent ? 'مهمة الخلفية مفعلة.' : 'فعّل المزامنة في الخلفية من الإعدادات.',
+    },
+    {
+      key: 'device',
+      icon: Smartphone,
+      label: 'تسجيل الجهاز',
+      value: d.deviceRegistered ? 'مسجل' : 'غير مسجل',
+      active: d.deviceRegistered,
+      reason: 'يتعرف الخادم على الجهاز لإرسال الطلبات.',
+      solution: d.deviceRegistered ? 'الجهاز مسجل.' : 'تأكد من وجود خادم نشط ثم اضغط تسجيل الجهاز.',
+    },
+    {
+      key: 'battery',
+      icon: Battery,
+      label: 'تحسين البطارية',
+      value: d.batteryOptimization === 'restricted' ? 'مقيد' : 'غير مقيد',
+      active: d.batteryOptimization !== 'restricted',
+      reason: 'التحسين المقيد يقتل التطبيق في الخلفية.',
+      solution: d.batteryOptimization !== 'restricted' ? 'لا توجد قيود.' : 'أضف التطبيق إلى قائمة “عدم التحسين” في إعدادات النظام.',
+    },
+    {
+      key: 'database',
+      icon: Database,
+      label: 'قاعدة البيانات',
+      value: d.databaseReady ? 'جاهزة' : 'غير جاهزة',
+      active: d.databaseReady,
+      reason: 'تخزن الطلبات والرسائل المفهرسة محليًا.',
+      solution: d.databaseReady ? 'قاعدة البيانات تعمل.' : 'أعد تشغيل التطبيق، وإن استمرت المشكلة أبلغ الفريق.',
+    },
+  ];
+
+  const backendItems: StatusItem[] = [
+    {
+      key: 'backend',
+      icon: Globe,
+      label: 'Backend',
+      value: d.backendStatus === 'online' ? 'Online' : d.backendStatus === 'error' ? 'Error' : 'Unknown',
+      active: d.backendStatus === 'online',
+      reason: 'الاتصال بالخادم المُعدّ ضروري للحصول على الطلبات وإرسال التأكيد.',
+      solution: d.backendStatus === 'online' ? 'الخادم متاح.' : 'تحقق من عنوان URL والشهادات والبيانات في إعدادات الخادم.',
+    },
+    {
+      key: 'realtime',
+      icon: Radio,
+      label: 'Realtime',
+      value: d.realtimeStatus === 'connected' ? 'متصل' : 'Polling',
+      active: d.realtimeStatus === 'connected',
+      reason: 'يحدد كيفية استلام الطلبات الجديدة.',
+      solution: d.realtimeStatus === 'connected' ? 'القناة الحية متصلة.' : 'يعمل الاستطلاع الاحتياطي؛ يمكنك إعداده من إعدادات الخادم.',
+    },
+  ];
 
   return (
     <View className="flex-1 bg-background" style={{ paddingTop: insets.top }}>
@@ -75,50 +198,31 @@ export default function DiagnosticsScreen() {
           <Text className="text-xl font-bold text-foreground">تشخيص الوكيل</Text>
         </View>
 
-        <View className="mb-6 px-4 py-5 border border-border rounded-2xl bg-card gap-4">
-          <Text className="text-sm font-semibold text-foreground">حالة النظام</Text>
-          <StatusRow
-            icon={Activity}
-            label="حالة الوكيل"
-            value={d.agentRunning ? 'يعمل' : 'متوقف'}
-            active={d.agentRunning}
-          />
-          <StatusRow
-            icon={Wifi}
-            label="الشبكة"
-            value={d.network === 'ONLINE' ? 'متصل' : 'غير متصل'}
-            active={d.network === 'ONLINE'}
-          />
-          <StatusRow
-            icon={MessageSquare}
-            label="قراءة SMS"
-            value={d.smsReady ? 'جاهز' : 'لا يوجد إذن'}
-            active={d.smsReady}
-          />
-          <StatusRow
-            icon={Bell}
-            label="الإشعارات"
-            value={d.notifications ? 'مفعلة' : 'معطلة'}
-            active={d.notifications}
-          />
-          <StatusRow
-            icon={Server}
-            label="المزامنة في الخلفية"
-            value={d.backgroundAgent ? 'مسجلة' : 'غير مسجلة'}
-            active={d.backgroundAgent}
-          />
-          <StatusRow
-            icon={Smartphone}
-            label="تسجيل الجهاز"
-            value={d.deviceRegistered ? 'مسجل' : 'غير مسجل'}
-            active={d.deviceRegistered}
-          />
-          <StatusRow
-            icon={Battery}
-            label="تحسين البطارية"
-            value={d.batteryOptimization === 'restricted' ? 'مقيد' : 'غير معروف'}
-            active={d.batteryOptimization !== 'restricted'}
-          />
+        <View className="mb-6 px-4 py-5 border border-border rounded-2xl bg-card gap-1">
+          <Text className="text-sm font-semibold text-foreground mb-4">حالة النظام</Text>
+          {systemItems.map((item) => (
+            <StatusRow
+              key={item.key}
+              item={item}
+              expanded={expanded === item.key}
+              onToggle={() => setExpanded(expanded === item.key ? null : item.key)}
+            />
+          ))}
+        </View>
+
+        <View className="mb-6 px-4 py-5 border border-border rounded-2xl bg-card gap-1">
+          <Text className="text-sm font-semibold text-foreground mb-4">Backend</Text>
+          {backendItems.map((item) => (
+            <StatusRow
+              key={item.key}
+              item={item}
+              expanded={expanded === item.key}
+              onToggle={() => setExpanded(expanded === item.key ? null : item.key)}
+            />
+          ))}
+          <InfoRow label="Active Server" value={d.activeServerProfile || '—'} />
+          <InfoRow label="Base URL" value={activeProfile?.baseUrl || '—'} />
+          <InfoRow label="Auth Type" value={activeProfile?.apiContract?.auth?.type || activeProfile?.authType || '—'} />
         </View>
 
         <View className="mb-6 px-4 py-5 border border-border rounded-2xl bg-card gap-4">
@@ -128,29 +232,30 @@ export default function DiagnosticsScreen() {
           <InfoRow label="آخر رسالة SMS" value={d.lastSmsAt ? formatTime(d.lastSmsAt) : '—'} />
           <InfoRow label="آخر مسح" value={d.lastScanAt ? formatTime(d.lastScanAt) : '—'} />
           <InfoRow label="آخر مزامنة" value={state.lastSyncAt ? formatTime(state.lastSyncAt) : '—'} />
-          {d.lastError && <Text className="text-xs text-destructive">{d.lastError}</Text>}
+          {d.lastError && (
+            <View className="flex-row items-start gap-2 px-3 py-2 rounded-lg bg-destructive/10">
+              <AlertCircle size={16} color="#ef4444" />
+              <Text className="flex-1 text-xs text-destructive">{d.lastError}</Text>
+            </View>
+          )}
         </View>
 
         <View className="mb-6 px-4 py-5 border border-border rounded-2xl bg-card gap-4">
-          <Text className="text-sm font-semibold text-foreground">Backend</Text>
-          <InfoRow label="Active Server" value={d.activeServerProfile || '—'} />
-          <InfoRow label="Base URL" value={activeProfile?.baseUrl || '—'} />
-          <InfoRow label="Realtime" value={d.realtimeStatus === 'polling' ? 'Polling' : activeProfile?.apiContract?.realtime?.type || '—'} />
-          <InfoRow label="Auth Type" value={activeProfile?.apiContract?.auth?.type || activeProfile?.authType || '—'} />
-          <InfoRow label="Backend Status" value={d.backendStatus === 'online' ? 'Online' : d.backendStatus === 'error' ? 'Error' : 'Unknown'} />
-          {lastMeta && (
-            <>
-              <InfoRow label="Last Method" value={d.lastBackendMethod || '—'} />
-              <InfoRow label="Last Endpoint" value={d.lastBackendEndpoint || '—'} />
-              <InfoRow label="Last Status" value={d.lastBackendStatus ? String(d.lastBackendStatus) : '—'} />
-              <InfoRow label="Request ID" value={d.lastBackendRequestId || '—'} />
-              {d.lastBackendError && <InfoRow label="Error" value={d.lastBackendError} />}
-              {d.lastBackendResponse && (
-                <Text className="text-xs text-muted-foreground" numberOfLines={6}>
-                  {d.lastBackendResponse}
-                </Text>
-              )}
-            </>
+          <Text className="text-sm font-semibold text-foreground">آخر طلب للخادم</Text>
+          <InfoRow label="Last Method" value={d.lastBackendMethod || '—'} />
+          <InfoRow label="Last Endpoint" value={d.lastBackendEndpoint || '—'} />
+          <InfoRow label="Last Status" value={d.lastBackendStatus ? String(d.lastBackendStatus) : '—'} />
+          <InfoRow label="Request ID" value={d.lastBackendRequestId || '—'} />
+          {lastMeta?.finishedAt && (
+            <InfoRow label="Finished At" value={formatTime(lastMeta.finishedAt)} />
+          )}
+          {d.lastBackendError && (
+            <InfoRow label="Error" value={d.lastBackendError} />
+          )}
+          {d.lastBackendResponse && (
+            <Text className="text-xs text-muted-foreground" numberOfLines={6}>
+              {d.lastBackendResponse}
+            </Text>
           )}
         </View>
 
@@ -180,34 +285,55 @@ export default function DiagnosticsScreen() {
 }
 
 function StatusRow({
-  icon: Icon,
-  label,
-  value,
-  active,
+  item,
+  expanded,
+  onToggle,
 }: {
-  icon: React.ElementType;
-  label: string;
-  value: string;
-  active: boolean;
+  item: StatusItem;
+  expanded: boolean;
+  onToggle: () => void;
 }) {
+  const Icon = item.icon;
+  const StatusIcon = item.active ? CheckCircle2 : XCircle;
+  const color = item.active ? '#22c55e' : '#ef4444';
   return (
-    <View className="flex-row items-center justify-between">
-      <View className="flex-row items-center gap-3">
-        <Icon size={18} color={active ? '#22c55e' : '#ef4444'} />
-        <Text className="text-sm text-foreground">{label}</Text>
+    <Pressable onPress={onToggle} className="py-3 border-b border-border last:border-b-0 active:opacity-70">
+      <View className="flex-row items-center justify-between">
+        <View className="flex-row items-center gap-3">
+          <Icon size={18} color="#6b7280" />
+          <Text className="text-sm text-foreground">{item.label}</Text>
+        </View>
+        <View className="flex-row items-center gap-2">
+          <Text className="text-sm font-medium" style={{ color }}>
+            {item.value}
+          </Text>
+          <StatusIcon size={16} color={color} />
+          {expanded ? <ChevronUp size={16} color="#9ca3af" /> : <ChevronDown size={16} color="#9ca3af" />}
+        </View>
       </View>
-      <Text className="text-sm font-medium" style={{ color: active ? '#22c55e' : '#ef4444' }}>
-        {value}
-      </Text>
-    </View>
+      {expanded && (
+        <View className="mt-3 px-3 py-3 rounded-xl bg-muted gap-2">
+          <View className="flex-row items-start gap-2">
+            <HelpCircle size={16} color="#6b7280" />
+            <Text className="flex-1 text-xs text-muted-foreground leading-5">{item.reason}</Text>
+          </View>
+          <View className="flex-row items-start gap-2">
+            <Activity size={16} color="#3b82f6" />
+            <Text className="flex-1 text-xs text-foreground leading-5">{item.solution}</Text>
+          </View>
+        </View>
+      )}
+    </Pressable>
   );
 }
 
 function InfoRow({ label, value }: { label: string; value: string }) {
   return (
-    <View className="flex-row justify-between">
+    <View className="flex-row justify-between py-1">
       <Text className="text-sm text-muted-foreground">{label}</Text>
-      <Text className="text-sm font-medium text-foreground">{value}</Text>
+      <Text className="text-sm font-medium text-foreground" numberOfLines={1}>
+        {value}
+      </Text>
     </View>
   );
 }

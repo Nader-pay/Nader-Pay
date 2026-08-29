@@ -13,7 +13,8 @@ export type AgentOrderStatus =
   | 'expired'
   | 'error'
   | 'sync_pending'
-  | 'syncing';
+  | 'syncing'
+  | 'duplicate';
 
 export type ConnectionStatus = 'ONLINE' | 'OFFLINE' | 'CONNECTING' | 'SYNCING' | 'ERROR';
 
@@ -146,7 +147,7 @@ export type AgentDiagnosticState = {
   lastBackendRequestId?: string | null;
   lastBackendResponse?: string | null;
   lastBackendError?: string | null;
-  realtimeStatus?: 'connected' | 'polling' | 'unavailable' | 'unknown';
+  realtimeStatus?: 'connected' | 'polling' | 'disconnected' | 'error' | 'unavailable' | 'unknown';
 };
 
 export type AgentState = {
@@ -168,6 +169,8 @@ export type AgentState = {
     rejected: number;
     waiting: number;
     syncPending: number;
+    duplicate: number;
+    review: number;
     total: number;
   };
 };

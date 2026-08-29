@@ -1,6 +1,6 @@
 import { Tabs } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { LayoutDashboard, ClipboardList, Settings, Activity, Server } from 'lucide-react-native';
+import { LayoutDashboard, ClipboardList, Settings, Activity, Server, Wallet } from 'lucide-react-native';
 
 export default function TabsLayout() {
   const insets = useSafeAreaInsets();
@@ -39,6 +39,13 @@ export default function TabsLayout() {
         options={{
           title: 'الطلبات',
           tabBarIcon: ({ color, size }) => <ClipboardList size={size} color={color} />,
+        }}
+      />
+      <Tabs.Screen
+        name="payment-sources"
+        options={{
+          title: 'مصادر الدفع',
+          tabBarIcon: ({ color, size }) => <Wallet size={size} color={color} />,
         }}
       />
       <Tabs.Screen

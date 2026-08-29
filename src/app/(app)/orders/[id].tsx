@@ -3,7 +3,7 @@ import { ActivityIndicator, Pressable, ScrollView, Text, TextInput, View } from 
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { ArrowRight, Check, RefreshCw, X, MessageSquare, FileText, AlertCircle, History, ShieldAlert } from 'lucide-react-native';
+import { ArrowRight, Check, RefreshCw, X, MessageSquare, FileText, AlertCircle, History, ShieldAlert, Shield, CheckCircle2, XCircle } from 'lucide-react-native';
 
 import { useAgent } from '@/contexts/AgentContext';
 import { getOrderById, getVerificationLogs, getOrderTimeline } from '@/lib/database';
@@ -25,12 +25,30 @@ export default function OrderDetailScreen() {
     expected_sender_phone: string | null;
     expected_sender_name: string | null;
     expected_recipient_wallet: string | null;
+    sender_phone: string | null;
+    receiver_phone: string | null;
+    transaction_id: string | null;
+    transaction_reference: string | null;
+    message_received_at: string | null;
     status: string;
     expires_at: string | null;
     created_at: string;
     local_status: string | null;
     raw_sms: string | null;
     match_score: number | null;
+    matched_transaction: string | null;
+  } | null>(null);
+
+  const [verified, setVerified] = useState<{
+    amount: number | null;
+    currency: string | null;
+    senderPhone: string | null;
+    receiverPhone: string | null;
+    transactionId: string | null;
+    transactionReference: string | null;
+    rawMessage: string | null;
+    sourceVerified: boolean;
+    duplicate: boolean;
   } | null>(null);
 
   const [logs, setLogs] = useState<{ action: string; result: string | null; reason: string | null; created_at: string }[]>([]);
@@ -54,13 +72,39 @@ export default function OrderDetailScreen() {
         expected_sender_phone: row.expected_sender_phone,
         expected_sender_name: row.expected_sender_name,
         expected_recipient_wallet: row.expected_recipient_wallet,
+        sender_phone: null,
+        receiver_phone: null,
+        transaction_id: null,
+        transaction_reference: null,
+        message_received_at: null,
         status: row.status,
         expires_at: row.expires_at,
         created_at: row.created_at,
         local_status: row.local_status,
         raw_sms: row.raw_sms,
         match_score: row.match_score,
+        matched_transaction: row.matched_transaction,
       });
+
+      let parsed: Record<string, unknown> | null = null;
+      if (row.matched_transaction) {
+        try {
+          parsed = JSON.parse(row.matched_transaction);
+        } catch {
+          parsed = null;
+        }
+      }
+      setVerified(parsed ? {
+        amount: typeof parsed.amount === 'number' ? parsed.amount : null,
+        currency: typeof parsed.currency === 'string' ? parsed.currency : null,
+        senderPhone: typeof parsed.senderPhone === 'string' ? parsed.senderPhone : null,
+        receiverPhone: typeof parsed.receiverPhone === 'string' ? parsed.receiverPhone : null,
+        transactionId: typeof parsed.transactionId === 'string' ? parsed.transactionId : null,
+        transactionReference: typeof parsed.transactionReference === 'string' ? parsed.transactionReference : null,
+        rawMessage: typeof parsed.rawMessage === 'string' ? parsed.rawMessage : null,
+        sourceVerified: Boolean(parsed.sourceVerified),
+        duplicate: Boolean(parsed.duplicate),
+      } : null);
       const logRows = await getVerificationLogs(id);
       setLogs(logRows.map((l) => ({ action: l.action, result: l.result, reason: l.reason, created_at: l.created_at })));
       const timelineRows = await getOrderTimeline(id);
@@ -161,6 +205,25 @@ export default function OrderDetailScreen() {
                 </View>
                 <Text className="text-sm text-muted-foreground leading-5" selectable>
                   {order.raw_sms}
+                </Text>
+              </View>
+            )}
+
+            {verified && (
+              <View className="px-4 py-5 border border-border rounded-2xl bg-card gap-3">
+                <View className="flex-row items-center gap-2">
+                  <Shield size={18} color="#6b7280" />
+                  <Text className="text-sm font-semibold text-foreground">فحوصات التحقق</Text>
+                </View>
+                <CheckRow label="المبلغ" ok={order.amount === verified.amount} expected={String(order.amount)} actual={String(verified.amount) ?? '—'} />
+                <CheckRow label="العملة" ok={order.currency === verified.currency} expected={order.currency} actual={verified.currency ?? '—'} />
+                <CheckRow label="المرسل" ok={checkPhoneMatch(order.expected_sender_phone, verified.senderPhone)} expected={order.expected_sender_phone || '—'} actual={verified.senderPhone || '—'} />
+                <CheckRow label="المستلم" ok={checkPhoneMatch(order.expected_recipient_wallet, verified.receiverPhone)} expected={order.expected_recipient_wallet || '—'} actual={verified.receiverPhone || '—'} />
+                <CheckRow label="رقم العملية" ok={Boolean(verified.transactionId)} expected={order.transaction_id || order.transaction_reference || '—'} actual={verified.transactionId || verified.transactionReference || '—'} />
+                <CheckRow label="مصدر الرسالة" ok={verified.sourceVerified} expected="موثوق" actual={verified.sourceVerified ? 'موثوق' : 'غير موثوق'} />
+                <CheckRow label="التكرار" ok={!verified.duplicate} expected="غير مكرر" actual={verified.duplicate ? 'مكرر' : 'غير مكرر'} />
+                <Text className="text-xs text-muted-foreground mt-1">
+                  وقت استلام الرسالة: {order.message_received_at ? formatDate(order.message_received_at) : verified?.rawMessage ? '—' : '—'}
                 </Text>
               </View>
             )}
@@ -346,6 +409,39 @@ function InfoRow({ label, value }: { label: string; value: string }) {
   );
 }
 
+function checkPhoneMatch(a: string | null, b: string | null): boolean {
+  if (!a || !b) return false;
+  const na = a.replace(/\D/g, '');
+  const nb = b.replace(/\D/g, '');
+  if (!na || !nb) return false;
+  return na === nb || na.endsWith(nb) || nb.endsWith(na);
+}
+
+function CheckRow({
+  label,
+  ok,
+  expected,
+  actual,
+}: {
+  label: string;
+  ok: boolean;
+  expected: string;
+  actual: string;
+}) {
+  return (
+    <View className="flex-row items-center justify-between py-1 border-b border-border last:border-b-0">
+      <View className="flex-row items-center gap-2">
+        {ok ? <CheckCircle2 size={14} color="#22c55e" /> : <XCircle size={14} color="#ef4444" />}
+        <Text className="text-sm text-foreground">{label}</Text>
+      </View>
+      <View className="flex-1 items-end">
+        <Text className="text-xs text-muted-foreground">متوقع: {expected}</Text>
+        <Text className={`text-xs font-medium ${ok ? 'text-green-600' : 'text-destructive'}`}>فعلي: {actual}</Text>
+      </View>
+    </View>
+  );
+}
+
 function orderStatusMeta(status: AgentOrderStatus | undefined) {
   switch (status) {
     case 'confirmed':
@@ -366,6 +462,8 @@ function orderStatusMeta(status: AgentOrderStatus | undefined) {
       return { label: 'بانتظار المزامنة', bgColor: '#e0e7ff', textColor: '#3730a3' };
     case 'error':
       return { label: 'خطأ', bgColor: '#fee2e2', textColor: '#991b1b' };
+    case 'duplicate':
+      return { label: 'مكرر', bgColor: '#f3e8ff', textColor: '#6b21a8' };
     case 'new':
     default:
       return { label: 'جديد', bgColor: '#f3f4f6', textColor: '#374151' };

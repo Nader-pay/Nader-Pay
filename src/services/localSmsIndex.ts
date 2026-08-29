@@ -153,3 +153,25 @@ export async function getIndexedSmsCount(): Promise<number> {
   const row = await db.getFirstAsync<{ count: number }>('SELECT COUNT(*) as count FROM local_sms_index');
   return row?.count ?? 0;
 }
+
+export async function getIndexedSmsStats(): Promise<
+  {
+    provider: string;
+    count: number;
+    lastReceivedAt: string | null;
+  }[]
+> {
+  const db = await dbReady;
+  const rows = (await db.getAllAsync(
+    `SELECT provider, COUNT(*) as count, MAX(received_at) as last_received_at
+     FROM local_sms_index
+     WHERE provider IS NOT NULL
+     GROUP BY provider
+     ORDER BY count DESC`
+  )) as { provider: string; count: number; last_received_at: string | null }[];
+  return rows.map((r) => ({
+    provider: r.provider,
+    count: r.count,
+    lastReceivedAt: r.last_received_at,
+  }));
+}
