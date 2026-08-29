@@ -56,3 +56,4 @@ history/*.json
 package.json.[0-9]*
 .native-wind-cache
 .vite
+/historical_context.txt

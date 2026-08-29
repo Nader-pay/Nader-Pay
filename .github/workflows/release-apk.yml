@@ -51,16 +51,39 @@ jobs:
       - name: Prebuild Android
         run: pnpm exec expo prebuild --platform android
 
+      - name: Configure release signing and ABI splits
+        run: node scripts/patch-android-release.js
+
       - name: Build APK
         run: |
           cd android
           ./gradlew assembleRelease
 
-      - name: Upload APK as artifact
+      - name: Rename APKs
+        run: |
+          OUT_DIR="android/app/build/outputs/apk/release"
+          echo "APK outputs:"
+          ls -lh "$OUT_DIR"/*.apk
+          # Rename universal to nader-pay-agent.apk
+          if [ -f "$OUT_DIR/app-universal-release.apk" ]; then
+            mv "$OUT_DIR/app-universal-release.apk" "$OUT_DIR/nader-pay-agent.apk"
+          fi
+          # Rename per-ABI apks
+          for f in "$OUT_DIR"/app-*-release.apk; do
+            [ -f "$f" ] || continue
+            base=$(basename "$f")
+            # base format: app-arm64-v8a-release.apk
+            newname=$(echo "$base" | sed -E 's/app-(.+)-release.apk/nader-pay-agent-\1.apk/')
+            mv "$f" "$OUT_DIR/$newname"
+          done
+          echo "Final APK list:"
+          ls -lh "$OUT_DIR"/*.apk
+
+      - name: Upload APKs as artifact
         uses: actions/upload-artifact@v4
         with:
           name: nader-pay-agent-apk
-          path: android/app/build/outputs/apk/release/app-release.apk
+          path: android/app/build/outputs/apk/release/*.apk
 
       - name: Create Release
         if: github.ref == 'refs/heads/main'
@@ -68,7 +91,7 @@ jobs:
         with:
           tag_name: v${{ github.run_number }}
           name: Release v${{ github.run_number }}
-          files: android/app/build/outputs/apk/release/app-release.apk
+          files: android/app/build/outputs/apk/release/*.apk
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
