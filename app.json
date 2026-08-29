@@ -3,7 +3,7 @@
     "name": "Nader Pay Agent",
     "slug": "nader-pay-agent",
     "scheme": "appdz8miw66l2wx",
-    "version": "1.0.48",
+    "version": "1.0.49",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
