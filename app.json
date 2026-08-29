@@ -3,7 +3,7 @@
     "name": "Nader Pay Agent",
     "slug": "nader-pay-agent",
     "scheme": "appdz8miw66l2wx",
-    "version": "1.0.52",
+    "version": "1.0.55",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
@@ -18,7 +18,7 @@
         "backgroundColor": "#ffffff"
       },
       "predictiveBackGestureEnabled": false,
-      "versionCode": 37,
+      "versionCode": 38,
       "package": "com.miaoda.appdz8miw66l2wx",
       "permissions": [
         "android.permission.RECEIVE_SMS",
@@ -42,7 +42,8 @@
       "expo-sharing",
       "expo-secure-store",
       "expo-sms-listener",
-      "expo-notifications"
+      "expo-notifications",
+      "./plugins/with-clean-android-manifest"
     ],
     "router": {
       "root": "src"
