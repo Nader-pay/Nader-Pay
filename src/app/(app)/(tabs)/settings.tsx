@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, KeyboardAvoidingView, Linking, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, KeyboardAvoidingView, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -7,6 +7,7 @@ import { Check, LogOut, Save, Server, Smartphone, X, Bell, Battery, Wifi, Messag
 
 import { useSession } from '@/ctx';
 import { useAgent } from '@/contexts/AgentContext';
+import { openAppSettings } from '@/lib/linking';
 import { supabase } from '@/client/supabase';
 import { logEvent } from '@/lib/database';
 import { requestNotificationPermission } from '@/services/notifications';
@@ -230,7 +231,7 @@ export default function SettingsScreen() {
               <Toggle value={form.notificationsEnabled} onChange={(v) => setForm((f) => ({ ...f, notificationsEnabled: v }))} />
             </Row>
             <Pressable
-              onPress={() => Linking.openSettings()}
+              onPress={() => openAppSettings()}
               className="flex-row items-center justify-center gap-2 py-3 rounded-xl border border-border active:opacity-70"
             >
               <Battery size={16} color="#6b7280" />

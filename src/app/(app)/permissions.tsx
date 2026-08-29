@@ -1,11 +1,12 @@
 import { useCallback, useState } from 'react';
-import { Linking, Pressable, ScrollView, Text, View } from 'react-native';
+import { Pressable, ScrollView, Text, View } from 'react-native';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ArrowRight, Bell, MessageSquare, RefreshCw, Server } from 'lucide-react-native';
 
 import { useAgent } from '@/contexts/AgentContext';
+import { openAppSettings } from '@/lib/linking';
 import { requestSmsPermission } from '@/services/smsReader';
 import { requestNotificationPermission } from '@/services/notifications';
 
@@ -35,7 +36,7 @@ export default function PermissionsScreen() {
   const handleSmsPermission = async () => {
     const granted = await requestSmsPermission();
     if (!granted) {
-      Linking.openSettings();
+      openAppSettings();
     }
     await runDiagnostics();
   };
@@ -43,7 +44,7 @@ export default function PermissionsScreen() {
   const handleNotificationPermission = async () => {
     const granted = await requestNotificationPermission();
     if (!granted) {
-      Linking.openSettings();
+      openAppSettings();
     }
     await runDiagnostics();
   };
@@ -80,7 +81,7 @@ export default function PermissionsScreen() {
           title="المزامنة في الخلفية"
           description="للمزامنة الدورية والعمل عند عدم فتح التطبيق."
           granted={d.backgroundAgent}
-          onPress={() => Linking.openSettings()}
+          onPress={openAppSettings}
         />
 
         <Pressable

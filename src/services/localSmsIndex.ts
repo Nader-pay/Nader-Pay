@@ -5,7 +5,7 @@ import type { SmsMessage, ParsedTransaction, ProviderName } from '@/types/agent'
 
 const IS_WEB = process.env.EXPO_OS === 'web';
 const SMS_DB_NAME = IS_WEB ? ':memory:' : 'naderpay_sms_index.db';
-const SMS_DB_OPTIONS = IS_WEB ? { useNewConnection: true } : undefined;
+const SMS_DB_OPTIONS = IS_WEB ? { useNewConnection: false } : undefined;
 
 async function runSchemaStatements(db: SQLite.SQLiteDatabase, source: string): Promise<void> {
   const statements = source
@@ -25,7 +25,7 @@ const dbReady = SQLite.openDatabaseAsync(SMS_DB_NAME, SMS_DB_OPTIONS)
   .catch((err) => {
     if (IS_WEB) {
       console.warn('[expo-sqlite] naderpay_sms_index.db open failed, using :memory: fallback', err);
-      return SQLite.openDatabaseAsync(':memory:', { useNewConnection: true });
+      return SQLite.openDatabaseAsync(':memory:', { useNewConnection: false });
     }
     throw err;
   })

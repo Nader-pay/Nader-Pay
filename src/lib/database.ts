@@ -3,7 +3,7 @@ import * as SQLite from 'expo-sqlite';
 const IS_WEB = process.env.EXPO_OS === 'web';
 
 const DB_NAME = IS_WEB ? ':memory:' : 'naderpay_agent.db';
-const DB_OPTIONS = IS_WEB ? { useNewConnection: true } : undefined;
+const DB_OPTIONS = IS_WEB ? { useNewConnection: false } : undefined;
 
 const dbReady = SQLite.openDatabaseAsync(DB_NAME, DB_OPTIONS)
   .catch((err) => {
@@ -12,7 +12,7 @@ const dbReady = SQLite.openDatabaseAsync(DB_NAME, DB_OPTIONS)
     // can still render during preview.
     if (IS_WEB) {
       console.warn('[expo-sqlite] naderpay_agent.db open failed, using :memory: fallback', err);
-      return SQLite.openDatabaseAsync(':memory:', { useNewConnection: true });
+      return SQLite.openDatabaseAsync(':memory:', { useNewConnection: false });
     }
     throw err;
   })

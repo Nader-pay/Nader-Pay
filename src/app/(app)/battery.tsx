@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Linking, Pressable, ScrollView, Text, View } from 'react-native';
+import { Pressable, ScrollView, Text, View } from 'react-native';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ArrowRight, Battery, Info, CheckCircle } from 'lucide-react-native';
 
 import { useAgent } from '@/contexts/AgentContext';
+import { openAppSettings } from '@/lib/linking';
 
 export default function BatteryOptimizationScreen() {
   const router = useRouter();
@@ -19,8 +20,8 @@ export default function BatteryOptimizationScreen() {
     }, [state.diagnostics.batteryOptimization])
   );
 
-  const openSettings = () => {
-    Linking.openSettings();
+  const openBatterySettings = () => {
+    openAppSettings();
   };
 
   return (
@@ -83,7 +84,7 @@ export default function BatteryOptimizationScreen() {
         </View>
 
         <Pressable
-          onPress={openSettings}
+          onPress={openBatterySettings}
           className="flex-row items-center justify-center gap-2 py-3.5 rounded-2xl bg-primary active:opacity-80 mb-8"
         >
           <Text className="text-sm font-semibold text-primary-foreground">فتح إعدادات التطبيق</Text>
