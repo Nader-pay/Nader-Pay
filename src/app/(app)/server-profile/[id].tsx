@@ -72,7 +72,7 @@ export default function ServerProfileScreen() {
       authType,
       isActive: true,
       isConnected: false,
-      discoveryUrl: discoveryUrl.trim() || undefined,
+      discoveryUrl: discoveryUrl.trim() || '/config',
       apiKey: apiKey || undefined,
       token: token || undefined,
       username: username || undefined,
@@ -166,7 +166,7 @@ export default function ServerProfileScreen() {
           <View className="border border-border rounded-2xl bg-card p-4 gap-4">
             <SectionTitle icon={Server} title="معلومات الخادم" />
             <Input label="الاسم" value={name} onChangeText={setName} placeholder="مثال: Nader Pay" />
-            <Input label="Base URL" value={baseUrl} onChangeText={setBaseUrl} placeholder="https://hbldhnpduoczneoyfzyz.supabase.co/functions/v1/backend-proxy" autoCapitalize="none" />
+            <Input label="Base URL" value={baseUrl} onChangeText={setBaseUrl} placeholder="https://ccimllgqdxuvymdeikmn.supabase.co/functions/v1/backend-proxy" autoCapitalize="none" />
             {baseUrl.trim() && baseUrl.trim() !== normalizedUrl && (
               <View className="px-3 py-2 rounded-xl bg-amber-50 border border-amber-200">
                 <Text className="text-xs text-amber-800">
@@ -178,7 +178,7 @@ export default function ServerProfileScreen() {
               label="Discovery URL (اختياري — اتركه فارغاً)"
               value={discoveryUrl}
               onChangeText={setDiscoveryUrl}
-              placeholder="اتركه فارغاً لاختبار الاتصال تلقائياً"
+              placeholder="/config"
               autoCapitalize="none"
             />
             <Text className="text-xs text-muted-foreground -mt-2">

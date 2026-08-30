@@ -17,6 +17,16 @@ export async function discoverApi(
   testResult?: ConnectionTestResult;
   error?: string;
 }> {
+  // إذا كان الرابط هو backend-proxy v2، نستخدم الـ contract المحدد مسبقاً
+  if (/\/functions\/v1\/backend-proxy$/i.test(profile.baseUrl)) {
+    const url = buildAbsoluteUrl(profile.baseUrl, '/config');
+    const result = await request(url, 'GET');
+    if (result.ok) {
+      return { contract: buildBackendProxyV2Contract(profile.baseUrl), testResult: result };
+    }
+    return { error: result.error || 'فشل اختبار الاتصال بـ backend-proxy v2' };
+  }
+
   // Try discovery endpoints
   for (const path of DEFAULT_DISCOVERY_PATHS) {
     const url = buildAbsoluteUrl(profile.baseUrl, path);
@@ -42,6 +52,23 @@ export async function discoverApi(
   }
 
   return { error: 'لم يتم العثور على نقطة اكتشاف API متوافقة' };
+}
+
+function buildBackendProxyV2Contract(baseUrl: string): BackendApiContract {
+  return {
+    baseUrl,
+    discoveryEndpoint: buildAbsoluteUrl(baseUrl, '/config'),
+    endpoints: {
+      config: '/config',
+      orders: '/orders',
+      receive: '/orders/{id}/receive',
+      verify: '/orders/{id}/verify',
+      confirm: '/orders/{id}/confirm',
+      reject: '/orders/{id}/reject',
+      duplicate: '/orders/{id}/duplicate',
+    },
+    auth: { type: 'bearer', in: 'header', prefix: 'Bearer' },
+  };
 }
 
 function parseDiscoveryResponse(

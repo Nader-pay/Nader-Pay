@@ -109,7 +109,7 @@ export async function sendBackendRequest(
   const { url, method = 'GET', body, query, extraHeaders = {} } = options;
   const startedAt = new Date().toISOString();
   const requestId = generateUUID();
-  const headers = { ...buildAuthHeaders(profile), ...extraHeaders };
+  const authHeaders = buildAuthHeaders(profile);
 
   lastRequestMeta = {
     endpoint: url,
@@ -119,22 +119,35 @@ export async function sendBackendRequest(
   };
 
   try {
-    // نستخدم fetch مباشر مع anon key صريح بدل supabase.functions.invoke
-    // لأن invoke يبعت session JWT أحياناً بدل anon key، وبعض الـ tokens لا تقبله backend-proxy
-    const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL || '';
-    const supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || '';
-    const proxyUrl = `${supabaseUrl}/functions/v1/backend-proxy`;
+    const baseUrl = profile.baseUrl.replace(/\/$/, '');
+    // ننشط عمليات backend-proxy v2 إذا كان الـ Base URL ينتهي بـ backend-proxy
+    const isBackendProxyV2 = /\/functions\/v1\/backend-proxy$/i.test(baseUrl);
+    const targetUrl = isBackendProxyV2 ? baseUrl : url;
+    const upstreamHeaders = isBackendProxyV2 ? authHeaders : { ...authHeaders, ...extraHeaders };
+
+    let requestPayload: unknown;
+    if (isBackendProxyV2 && url.startsWith(baseUrl)) {
+      // نحول الرابط المطلق إلى مسار نسبي لـ mobile-topup
+      let path = url.slice(baseUrl.length).replace(/^\/+/, '');
+      const queryString = new URLSearchParams(query as Record<string, string>).toString();
+      if (queryString) {
+        path = path.includes('?') ? `${path}&${queryString}` : `${path}?${queryString}`;
+      }
+      requestPayload = { path, method, body };
+    } else {
+      // في الوضع المباشر أو الـ backend-proxy v1
+      requestPayload = { url, method, headers: upstreamHeaders, body, query };
+    }
 
     const { fetch: expoFetch } = await import('expo/fetch').catch(() => ({ fetch: globalThis.fetch }));
-    const response = await expoFetch(proxyUrl, {
+    const response = await expoFetch(targetUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${supabaseAnonKey}`,
-        'apikey': supabaseAnonKey,
         'x-request-id': requestId,
+        ...upstreamHeaders,
       },
-      body: JSON.stringify({ url, method, headers, body, query }),
+      body: JSON.stringify(requestPayload),
     });
 
     const responseText = await response.text();
@@ -158,14 +171,26 @@ export async function sendBackendRequest(
       };
     }
 
-    const result = data as {
-      ok: boolean;
-      status: number;
-      statusText: string;
-      headers: Record<string, string>;
-      body: unknown;
-      requestId: string;
-    };
+    // لـ backend-proxy v2 — الرد يبدو مباشر من mobile-topup
+    // لـ backend-proxy v1 — الرد ملفوف في { ok, status, statusText, headers, body, requestId }
+    const isWrapped = data && typeof data === 'object' && 'ok' in data && 'status' in data && 'body' in data;
+    const result = isWrapped
+      ? (data as {
+          ok: boolean;
+          status: number;
+          statusText: string;
+          headers: Record<string, string>;
+          body: unknown;
+          requestId: string;
+        })
+      : {
+          ok: true,
+          status: response.status,
+          statusText: response.statusText,
+          headers: Object.fromEntries(response.headers.entries()),
+          body: data,
+          requestId,
+        };
 
     const meta: BackendRequestMeta = {
       ...lastRequestMeta,
@@ -205,16 +230,9 @@ export async function sendBackendRequest(
 }
 
 export async function testConnection(profile: ServerProfile): Promise<ConnectionTestResult> {
-  // إذا لم يُحدد discoveryUrl، نختبر الاتصال بإرسال health check مباشرة إلى backend-proxy
-  // هذا يتحقق من أن الـ Edge Function شغالة دون الحاجة لأي endpoint خارجي
-  if (!profile.discoveryUrl) {
-    return sendBackendRequest(profile, {
-      url: profile.baseUrl,
-      method: 'POST',
-      body: { action: 'health' },
-    });
-  }
-  const configUrl = buildAbsoluteUrl(profile.baseUrl, profile.discoveryUrl);
+  // إصدار backend-proxy v2 يستخدم /config كـ discovery endpoint
+  const discoveryUrl = profile.discoveryUrl || '/config';
+  const configUrl = buildAbsoluteUrl(profile.baseUrl, discoveryUrl);
   return sendBackendRequest(profile, { url: configUrl, method: 'GET' });
 }
 
