@@ -1,0 +1,2 @@
+[functions.payment-requests]
+verify_jwt = false
