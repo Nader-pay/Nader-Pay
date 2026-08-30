@@ -1,0 +1,232 @@
+name: Build and Release APK
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Setup JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android build-tools (aapt2, apksigner, zipalign)
+        run: |
+          sdkmanager --install "build-tools;34.0.0"
+          echo "ANDROID_BUILD_TOOLS=$ANDROID_HOME/build-tools/34.0.0" >> "$GITHUB_ENV"
+          echo "$ANDROID_HOME/build-tools/34.0.0" >> "$GITHUB_PATH"
+          echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Patch deprecated jcenter() in react-native-get-sms-android
+        run: |
+          FILE="node_modules/react-native-get-sms-android/android/build.gradle"
+          if [ -f "$FILE" ]; then
+            sed -i 's/jcenter()/mavenCentral()/g' "$FILE"
+            echo "Patched jcenter in $FILE"
+          fi
+
+      - name: Prebuild Android
+        run: pnpm exec expo prebuild --platform android
+
+      - name: Decode release keystore
+        run: |
+          mkdir -p android/keystore
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "ERROR: KEYSTORE_BASE64 secret is empty"
+            exit 1
+          fi
+          echo "$KEYSTORE_BASE64" | base64 -d > android/keystore/naderpay-release.keystore
+          if [ ! -s android/keystore/naderpay-release.keystore ]; then
+            echo "ERROR: decoded keystore is empty"
+            exit 1
+          fi
+          echo "Keystore decoded successfully ($(stat -c%s android/keystore/naderpay-release.keystore) bytes)"
+          keytool -list -keystore android/keystore/naderpay-release.keystore -storepass "$KEYSTORE_PASSWORD" -alias "$KEY_ALIAS" >/dev/null
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+
+      - name: Configure universal release build
+        run: node scripts/patch-android-release.js
+
+      - name: Build release APK
+        run: |
+          cd android
+          ./gradlew --no-daemon assembleRelease
+        env:
+          KEYSTORE_PATH: ${{ github.workspace }}/android/keystore/naderpay-release.keystore
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+
+      - name: Read app version
+        id: version
+        run: |
+          VERSION=$(node -p "require('./app.json').version")
+          VERSION_CODE=$(node -p "require('./app.json').android.versionCode")
+          echo "APP_VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "APP_VERSION_CODE=$VERSION_CODE" >> "$GITHUB_ENV"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "version_code=$VERSION_CODE" >> "$GITHUB_OUTPUT"
+          echo "App version: $VERSION (code: $VERSION_CODE)"
+
+      - name: Rename universal APK
+        run: |
+          OUT_DIR="android/app/build/outputs/apk/release"
+          echo "APK outputs:"
+          ls -lh "$OUT_DIR"/*.apk
+          if [ -f "$OUT_DIR/app-release.apk" ]; then
+            mv "$OUT_DIR/app-release.apk" "$OUT_DIR/nader-pay-agent-v${APP_VERSION}.apk"
+          fi
+          echo "Final APK:"
+          ls -lh "$OUT_DIR"/nader-pay-agent-v*.apk
+
+      - name: Verify APK before release
+        id: verify
+        run: |
+          APK="android/app/build/outputs/apk/release/nader-pay-agent-v${APP_VERSION}.apk"
+          if [ ! -f "$APK" ]; then
+            echo "ERROR: APK not found: $APK"
+            exit 1
+          fi
+
+          echo "=== APK size ==="
+          ls -lh "$APK" | awk '{print $5}'
+          echo "apk_size=$(ls -lh "$APK" | awk '{print $5}')" >> "$GITHUB_OUTPUT"
+
+          echo "=== SHA-256 ==="
+          sha256sum "$APK" | awk '{print $1}'
+          echo "apk_sha256=$(sha256sum "$APK" | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+
+          echo "=== aapt2 dump badging ==="
+          aapt2 dump badging "$APK" | tee /tmp/badging.txt
+          echo "application_id=$(grep '^package:' /tmp/badging.txt | sed -n "s/^package: name='\([^']*\)'.*$/\1/p")" >> "$GITHUB_OUTPUT"
+          echo "version_name=$(grep '^package:' /tmp/badging.txt | sed -n "s/.*versionName='\([^']*\)'.*/\1/p")" >> "$GITHUB_OUTPUT"
+          echo "version_code=$(grep '^package:' /tmp/badging.txt | sed -n "s/.*versionCode='\([^']*\)'.*/\1/p")" >> "$GITHUB_OUTPUT"
+          echo "min_sdk=$(grep '^sdkVersion:' /tmp/badging.txt | sed -n "s/^sdkVersion:'\([^']*\)'.*/\1/p")" >> "$GITHUB_OUTPUT"
+          echo "target_sdk=$(grep '^targetSdkVersion:' /tmp/badging.txt | sed -n "s/^targetSdkVersion:'\([^']*\)'.*/\1/p")" >> "$GITHUB_OUTPUT"
+
+          echo "=== Native libraries ABIs ==="
+          unzip -l "$APK" | grep '^.*lib/' | awk '{print $4}' | cut -d'/' -f2 | sort -u | tee /tmp/abis.txt
+          echo "abis=$(cat /tmp/abis.txt | tr '\n' ',' | sed 's/,$//')" >> "$GITHUB_OUTPUT"
+
+          echo "=== classes.dex check ==="
+          unzip -l "$APK" | grep -E 'classes\\d*\\.dex' | head
+          if ! unzip -l "$APK" | grep -q 'classes.dex'; then
+            echo "ERROR: classes.dex missing"
+            exit 1
+          fi
+
+          echo "=== resources.arsc check ==="
+          if ! unzip -l "$APK" | grep -q 'resources.arsc'; then
+            echo "ERROR: resources.arsc missing"
+            exit 1
+          fi
+
+          echo "=== apksigner verify ==="
+          if ! apksigner verify --verbose "$APK" > /tmp/apksigner.txt; then
+            echo "ERROR: apksigner verify failed"
+            cat /tmp/apksigner.txt
+            exit 1
+          fi
+          cat /tmp/apksigner.txt
+          scheme=$(grep 'Verified using.*: true' /tmp/apksigner.txt | grep -o 'v[0-9][^ ]*' | head -1)
+          echo "signing_scheme=$scheme" >> "$GITHUB_OUTPUT"
+
+          echo "=== zipalign check ==="
+          zipalign -c -v 4 "$APK" | tee /tmp/zipalign.txt
+          if [ $? -ne 0 ]; then
+            echo "ERROR: zipalign check failed"
+            exit 1
+          fi
+          echo "zipalign_ok=true" >> "$GITHUB_OUTPUT"
+
+          echo "=== Manifest snippet ==="
+          aapt2 dump xmltree --file AndroidManifest.xml "$APK" | head -50
+
+          echo "=== All verifications passed ==="
+
+      - name: Print verification report
+        run: |
+          echo ""
+          echo "============================================"
+          echo "APK Verification Report"
+          echo "============================================"
+          echo "APK size:        ${{ steps.verify.outputs.apk_size }}"
+          echo "SHA-256:         ${{ steps.verify.outputs.apk_sha256 }}"
+          echo "applicationId:   ${{ steps.verify.outputs.application_id }}"
+          echo "versionName:     ${{ steps.verify.outputs.version_name }}"
+          echo "versionCode:     ${{ steps.verify.outputs.version_code }}"
+          echo "minSdk:          ${{ steps.verify.outputs.min_sdk }}"
+          echo "targetSdk:       ${{ steps.verify.outputs.target_sdk }}"
+          echo "ABIs:            ${{ steps.verify.outputs.abis }}"
+          echo "Signing scheme:  ${{ steps.verify.outputs.signing_scheme }}"
+          echo "apksigner:       OK"
+          echo "zipalign:        ${{ steps.verify.outputs.zipalign_ok }}"
+          echo "============================================"
+
+      - name: Upload verified APK as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nader-pay-agent-v${{ env.APP_VERSION }}
+          path: android/app/build/outputs/apk/release/nader-pay-agent-v${{ env.APP_VERSION }}.apk
+
+      - name: Create Release
+        if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ env.APP_VERSION }}
+          name: Nader Pay Agent v${{ env.APP_VERSION }}
+          body: |
+            **Version:** v${{ env.APP_VERSION }}
+            **Version Code:** ${{ env.APP_VERSION_CODE }}
+            **SHA-256:** ${{ steps.verify.outputs.apk_sha256 }}
+            **Min SDK:** ${{ steps.verify.outputs.min_sdk }}
+            **Target SDK:** ${{ steps.verify.outputs.target_sdk }}
+            **ABIs:** ${{ steps.verify.outputs.abis }}
+
+            **APK Verification Report**
+            - APK size: `${{ steps.verify.outputs.apk_size }}`
+            - applicationId: `${{ steps.verify.outputs.application_id }}`
+            - versionName: `${{ steps.verify.outputs.version_name }}`
+            - versionCode: `${{ steps.verify.outputs.version_code }}`
+            - minSdk: `${{ steps.verify.outputs.min_sdk }}`
+            - targetSdk: `${{ steps.verify.outputs.target_sdk }}`
+            - ABIs: `${{ steps.verify.outputs.abis }}`
+            - Signing scheme: `${{ steps.verify.outputs.signing_scheme }}`
+            - apksigner: OK
+            - zipalign: OK
+          files: android/app/build/outputs/apk/release/nader-pay-agent-v${{ env.APP_VERSION }}.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
