@@ -81,6 +81,7 @@ jobs:
         run: node scripts/patch-android-release.js
 
       - name: Build release APK
+        id: build_apk
         run: |
           cd android
           ./gradlew --no-daemon assembleRelease
@@ -89,6 +90,16 @@ jobs:
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+
+      - name: Upload Gradle build logs on failure
+        if: failure() && steps.build_apk.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: gradle-build-logs
+          path: |
+            android/app/build/outputs/logs/
+            android/build/reports/
+            android/app/build/reports/
 
       - name: Read app version
         id: version
