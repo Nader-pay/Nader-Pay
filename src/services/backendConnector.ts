@@ -197,9 +197,16 @@ export async function sendBackendRequest(
 }
 
 export async function testConnection(profile: ServerProfile): Promise<ConnectionTestResult> {
-  const configUrl = profile.discoveryUrl
-    ? buildAbsoluteUrl(profile.baseUrl, profile.discoveryUrl)
-    : buildAbsoluteUrl(profile.baseUrl, '/config');
+  // إذا لم يُحدد discoveryUrl، نختبر الاتصال بإرسال health check مباشرة إلى backend-proxy
+  // هذا يتحقق من أن الـ Edge Function شغالة دون الحاجة لأي endpoint خارجي
+  if (!profile.discoveryUrl) {
+    return sendBackendRequest(profile, {
+      url: profile.baseUrl,
+      method: 'POST',
+      body: { action: 'health' },
+    });
+  }
+  const configUrl = buildAbsoluteUrl(profile.baseUrl, profile.discoveryUrl);
   return sendBackendRequest(profile, { url: configUrl, method: 'GET' });
 }
 

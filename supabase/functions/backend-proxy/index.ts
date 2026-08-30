@@ -24,6 +24,11 @@ serve(async (req: Request) => {
       return jsonResponse(400, { error: 'Invalid payload: expected JSON object' });
     }
 
+    // Health check — يُستخدم لاختبار الاتصال من التطبيق
+    if ((payload as Record<string, unknown>).action === 'health') {
+      return jsonResponse(200, { ok: true, service: 'backend-proxy', ts: new Date().toISOString() });
+    }
+
     const { url, method = 'GET', headers = {}, body, query = {} } = payload as {
       url?: string;
       method?: string;
