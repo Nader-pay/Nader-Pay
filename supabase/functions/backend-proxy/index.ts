@@ -18,6 +18,40 @@ serve(async (req: Request) => {
     return new Response('ok', { status: 200, headers: CORS });
   }
 
+  // التحقق من Authorization — يقبل Supabase anon key أو NADER custom token
+  const authHeader = req.headers.get('Authorization') ?? '';
+  const apiKeyHeader = req.headers.get('apikey') ?? '';
+  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
+
+  // يجب وجود authorization header أو apikey header
+  if (!token && !apiKeyHeader) {
+    return jsonResponse(401, { error: 'Authorization مطلوب' });
+  }
+
+  // التحقق باستخدام Supabase JWKS فقط لـ JWT tokens (تبدأ بـ eyJ)
+  // NADER-... و custom tokens تمر مباشرة بدون تحقق إضافي
+  if (token.startsWith('eyJ')) {
+    const supabaseUrl = Deno.env.get('SUPABASE_URL') ?? '';
+    const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
+    const anonKey = Deno.env.get('SUPABASE_ANON_KEY') ?? '';
+    const expectedAnon = anonKey || apiKeyHeader;
+    // إذا كان التوكن هو نفس الـ anon key، نقبله مباشرة بدون تحقق شبكي
+    if (token === expectedAnon || !supabaseUrl || !serviceKey) {
+      // مقبول
+    } else {
+      try {
+        const verifyRes = await fetch(`${supabaseUrl}/auth/v1/user`, {
+          headers: { Authorization: authHeader, apikey: serviceKey },
+        });
+        if (!verifyRes.ok && verifyRes.status === 401) {
+          return jsonResponse(401, { error: 'JWT غير صالح' });
+        }
+      } catch {
+        // تجاهل أخطاء الشبكة
+      }
+    }
+  }
+
   try {
     const payload = await req.json().catch(() => null);
     if (!payload || typeof payload !== 'object') {
