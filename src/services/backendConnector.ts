@@ -1,4 +1,3 @@
-import { supabase } from '@/client/supabase';
 import type {
   ServerProfile,
   BackendApiContract,
@@ -120,30 +119,39 @@ export async function sendBackendRequest(
   };
 
   try {
-    const { data, error } = await supabase.functions.invoke('backend-proxy', {
+    // نستخدم fetch مباشر مع anon key صريح بدل supabase.functions.invoke
+    // لأن invoke يبعت session JWT أحياناً بدل anon key، وبعض الـ tokens لا تقبله backend-proxy
+    const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL || '';
+    const supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || '';
+    const proxyUrl = `${supabaseUrl}/functions/v1/backend-proxy`;
+
+    const { fetch: expoFetch } = await import('expo/fetch').catch(() => ({ fetch: globalThis.fetch }));
+    const response = await expoFetch(proxyUrl, {
       method: 'POST',
-      body: { url, method, headers, body, query },
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${supabaseAnonKey}`,
+        'apikey': supabaseAnonKey,
+        'x-request-id': requestId,
+      },
+      body: JSON.stringify({ url, method, headers, body, query }),
     });
 
-    if (error) {
-      const errorMsg = await (error as any)?.context?.text?.().catch(() => null);
+    const responseText = await response.text();
+    let data: unknown = null;
+    try { data = JSON.parse(responseText); } catch { data = responseText; }
+
+    if (!response.ok) {
+      const status = response.status;
       const meta: BackendRequestMeta = {
         ...lastRequestMeta,
         finishedAt: new Date().toISOString(),
-        error: errorMsg || error.message,
+        error: `HTTP ${status}`,
       };
       lastRequestMeta = meta;
-      const status = (error as any)?.status || (error as any)?.context?.status || 0;
-      const bodyText = typeof errorMsg === 'string' ? errorMsg : error.message;
-      let parsedBody: unknown = bodyText;
-      try {
-        parsedBody = JSON.parse(bodyText);
-      } catch {
-        // keep as text
-      }
       return {
         ok: false,
-        error: humanizeBackendError(parsedBody, status) || errorMsg || error.message,
+        error: humanizeBackendError(data, status) || `HTTP ${status}`,
         endpoint: url,
         method,
         requestId,
