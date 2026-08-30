@@ -1,5 +1,6 @@
 import type { ParsedTransaction } from '@/types/agent';
 import { createHash } from '@/lib/hash';
+import { parseMessage, detectProvider } from '@/services/providers';
 
 const VODAFONE_CASH_KEYWORDS = [
   'Vodafone Cash',
@@ -124,4 +125,21 @@ function parseOccurredAt(dateText: string | null): string | null {
 
 export function createMessageHash(message: string): string {
   return createHash(message);
+}
+
+/**
+ * Generic parser: يحاول تحليل الرسالة باستخدام أي مزود مسجل.
+ * يعيد null إذا لم يتطابق أي مزود.
+ */
+export function parseAnySms(message: string): ParsedTransaction | null {
+  return parseMessage(message);
+}
+
+/**
+ * يكتشف المزود الأقرب للرسالة من غير تحليل كامل.
+ * يعيد null إذا لم يتم التعرف على مزود.
+ */
+export function detectSmsProvider(message: string): ParsedTransaction['provider'] | null {
+  const provider = detectProvider(message);
+  return provider === 'unknown' ? null : provider;
 }

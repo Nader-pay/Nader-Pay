@@ -1,3 +1,5 @@
+import type { ProviderName } from './provider';
+
 export type AgentOrderStatus =
   | 'new'
   | 'scanning'
@@ -23,7 +25,7 @@ export type SmsMessage = {
 };
 
 export type ParsedTransaction = {
-  provider: 'vodafone_cash';
+  provider: ProviderName;
   transactionId: string;
   amount: number;
   currency: string;

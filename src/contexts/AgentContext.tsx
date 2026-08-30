@@ -21,7 +21,7 @@ import {
   sendEvidenceEvent,
   sendRejectEvent,
 } from '@/services/deviceRegistration';
-import { parseVodafoneCashSms, createMessageHash } from '@/services/smsParser';
+import { parseAnySms, detectSmsProvider, createMessageHash } from '@/services/smsParser';
 import { findBestMatch } from '@/services/matchingEngine';
 import { verifyMessageSource } from '@/services/sourceVerification';
 import { indexIncomingMessage } from '@/services/providerSourceService';
@@ -303,21 +303,27 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
         date: message.date,
       });
 
+      // اكتشاف المزوّد المحتمل في الرسالة
+      const detectedProvider = detectSmsProvider(message.body);
+
       // التحقق من مصدر الرسالة قبل المعالجة
-      const sourceCheck = await verifyMessageSource(message, 'vodafone_cash');
-      if (!sourceCheck.ok) {
-        await logVerification(
-          '',
-          'sms_source_unverified',
-          'rejected',
-          sourceCheck.reason ?? 'مصدر غير موثّق',
-          { originatingAddress: message.originatingAddress },
-          null
-        );
-        return;
+      // لو لم يُتم اكتشاف مزوّد معيّن → نتخطى التحقق حتى يتم التحليل
+      if (detectedProvider) {
+        const sourceCheck = await verifyMessageSource(message, detectedProvider);
+        if (!sourceCheck.ok) {
+          await logVerification(
+            '',
+            'sms_source_unverified',
+            'rejected',
+            sourceCheck.reason ?? 'مصدر غير موثّق',
+            { originatingAddress: message.originatingAddress },
+            null
+          );
+          return;
+        }
       }
 
-      const transaction = parseVodafoneCashSms(message.body);
+      const transaction = parseAnySms(message.body);
       if (!transaction) return;
 
       if (await isTransactionProcessed(transaction.transactionId)) {
