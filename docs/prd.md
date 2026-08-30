@@ -97,6 +97,7 @@ Nader Pay Agent
 │   ├── قائمة Providers
 │   ├── تفاصيل Provider
 │   │   ├── اكتشاف المصادر (Source Discovery)
+│   │   │   └── شاشة اكتشاف واختيار مصادر SMS [جديد]
 │   │   ├── اختيار المصدر (Source Selection)
 │   │   └── توثيق المصدر (Source Verification)
 │   └── Live Status لكل Provider
@@ -115,11 +116,11 @@ Nader Pay Agent
 - حالة Agent (نشط / متوقف) — مشتقة من Status Engine الفعلي
 - زر Notifications مع Badge لعدد التنبيهات غير المقروءة
 
-**ملخص حالة الوكيل الذكي (Agent Smart Summary) — جديد:**
+**ملخص حالة الوكيل الذكي (Agent Smart Summary):**
 يُعرض في أعلى الصفحة الرئيسية بعد Header مباشرة. يحتوي على:
 - مؤشر حالة مركّب يعكس الحالة الإجمالية للوكيل: جاهز / يحتاج انتباه / متوقف
 - الحالة الإجمالية مشتقة من Status Engine وتجمع: حالة الاتصال + حالة SMS Permission + حالة Provider الموثق + حالة Background Service
-- نص ملخص قصير يصف الحالة الحالية للوكيل بالعربية (مثال: «الوكيل يعمل بشكل طبيعي — 2 مزود موثق — متصل بالخادم» أو «تحذير: مزود Vodafone Cash غير موثق»)
+- نص ملخص قصير يصف الحالة الحالية للوكيل بالعربية
 - الملخص يتحدث تلقائياً عند تغيير أي حالة فعلية
 
 **المعلومات المعروضة (حالات حقيقية فقط من Status Engine):**
@@ -133,21 +134,10 @@ Nader Pay Agent
 - آخر خطأ (Last Error)
 - حالة Payment Sources لكل Provider
 
-**إحصائيات الطلبات — تفاعلية (جديد):**
-تُعرض كـ Cards قابلة للضغط. كل Card تمثل حالة طلب:
-- معلّق
-- جاري الفحص
-- مؤكد
-- مرفوض
-- مكرر
-- يحتاج مراجعة
-- Offline Queue
+**إحصائيات الطلبات — تفاعلية:**
+تُعرض كـ Cards قابلة للضغط. كل Card تمثل حالة طلب: معلّق، جاري الفحص، مؤكد، مرفوض، مكرر، يحتاج مراجعة، Offline Queue. عند الضغط على أي Card: ينتقل المستخدم مباشرة إلى شاشة الطلبات مع تفعيل الفلتر المقابل تلقائياً.
 
-عند الضغط على أي Card: ينتقل المستخدم مباشرة إلى شاشة الطلبات مع تفعيل الفلتر المقابل لتلك الحالة تلقائياً.
-
-**الأزرار:**
-- Update Now: مزامنة فورية
-- Test Connection: اختبار الاتصال بالخادم النشط
+**الأزرار:** Update Now، Test Connection.
 
 **قاعدة صارمة:** لا يُعرض أي حالة افتراضية إيجابية. كل حالة مشتقة من Status Engine الفعلي.
 
@@ -159,7 +149,7 @@ Nader Pay Agent
 
 **Filters:** الكل — جاري الفحص — مؤكد — مرفوض — مكرر — يحتاج مراجعة — Offline/Pending Sync — حسب Provider — حسب المبلغ — حسب التاريخ — حسب المصدر
 
-**ملاحظة:** عند الانتقال من Dashboard بالضغط على Card إحصائية، يُفعَّل الفلتر المقابل تلقائياً دون الحاجة لتدخل المستخدم.
+**ملاحظة:** عند الانتقال من Dashboard بالضغط على Card إحصائية، يُفعَّل الفلتر المقابل تلقائياً.
 
 **Search:** Order ID، رقم المرسل، رقم العملية
 
@@ -201,7 +191,7 @@ Order Received → Message Search → Message Matched → Provider Verified → 
 - آخر توثيق ناجح
 - زر «إضافة مصدر رسائل» أو «إعادة فحص» أو «إلغاء التوثيق» حسب الحالة
 
-**قاعدة العرض:** أي Provider بدون verified=true + source config صحيحة + successful verification في SQLite يُعرض «غير موثق» بصرف النظر عن أي حالة سابقة.
+**قاعدة العرض:** أي Provider بدون verified=true + source config صحيحة + successful verification في SQLite يُعرض «غير موثق».
 
 #### 4.5.2 تفاصيل Provider
 
@@ -218,42 +208,99 @@ Order Received → Message Search → Message Matched → Provider Verified → 
 - Approved sender/origin identifiers
 
 **الأزرار:**
-- «إضافة مصدر رسائل»: يبدأ Source Discovery
+- «إضافة مصدر رسائل»: يفتح شاشة اكتشاف واختيار مصادر SMS
 - «إعادة فحص المصدر»: يعيد Source Discovery من جديد
 - «إلغاء التوثيق»: يلغي التوثيق الحالي
 - «Provider Test Mode»: يعرض نتائج تحليل رسالة دون إرسال بيانات للخادم
 
-#### 4.5.3 تدفق اكتشاف المصادر (Source Discovery)
+#### 4.5.3 شاشة اكتشاف واختيار مصادر SMS [جديد]
 
-**المشغّل:** الضغط على «إضافة مصدر رسائل» أو «إعادة فحص».
+**الغرض:** تتيح للمستخدم استعراض رسائل SMS المخزنة على الجهاز، واكتشاف الأرقام/المعرفات التي ترسل رسائل مالية، وتصفيتها حسب مزود الخدمة، واختيار المصادر الموثوقة لتسجيلها في قاعدة البيانات.
 
-**الخطوات:**
-1. التحقق من صلاحية READ_SMS — إذا لم تكن ممنوحة يُطلب الإذن مع شرح واضح
-2. إذا رُفض الإذن: رسالة واضحة + زر مباشر لإعداد Android، إيقاف التدفق
-3. قراءة بيانات الرسائل من Android SMS Provider (sender/address, body, date, thread)
-4. تصفية المصادر الفريدة ذات الصلة بـ Providers المدعومة
-5. تجميع المصادر في قائمة منظمة
-6. عرض شاشة اختيار المصدر
+**المشغّل:** الضغط على «إضافة مصدر رسائل» أو «إعادة فحص» من شاشة تفاصيل Provider.
 
-**ملاحظة:** لا تُعامَل SMS كملفات خارجية. تُعرض فقط البيانات الفعلية من Android SMS Provider.
+**1. التحقق من صلاحية READ_SMS:**
+- عند فتح الشاشة: التحقق من منح صلاحية READ_SMS
+- إذا لم تكن ممنوحة: عرض شاشة توضيحية تشرح سبب الحاجة للصلاحية مع زر «منح الصلاحية»
+- إذا رُفض الإذن نهائياً (Permanently Denied): عرض رسالة واضحة + زر مباشر لإعدادات Android، إيقاف التدفق
+- دعم وضع عدم الاتصال: استعراض الرسائل المحلية المتاحة بدون الحاجة لخادم
 
-#### 4.5.4 شاشة اختيار المصدر (Source Selection)
+**2. قراءة وعرض رسائل SMS:**
+- قراءة بيانات الرسائل من Android SMS Provider (sender/address, body, date, thread)
+- لا تُعامَل SMS كملفات خارجية؛ تُعرض فقط البيانات الفعلية من Android SMS Provider
+- عرض قائمة برسائل SMS تحتوي لكل رسالة:
+  - رقم/معرّف المرسل (Sender Address)
+  - معاينة محتوى الرسالة (أول سطر أو أول 80 حرفاً)
+  - وقت الاستلام
+  - Provider المكتشف (إن أمكن تحديده)
+  - مؤشر احتمالية المصدر المالي (مرتفع / متوسط / منخفض)
 
-**بيانات كل مصدر:**
+**3. الاكتشاف الذكي وترتيب الرسائل:**
+- ترتيب الرسائل حسب احتمالية كونها من مصدر مالي باستخدام قواعد بسيطة مبنية على مفاتيح محتوى كل Provider:
+  - Vodafone Cash: كلمات مثل «تم استلام مبلغ»، «محفظتك»، «رصيدك الحالي»، «رقم العملية»
+  - Orange Cash: مفاتيح محتوى Orange Cash المتاحة في المشروع
+  - InstaPay: مفاتيح محتوى InstaPay المتاحة في المشروع
+  - Bank Transfer: مفاتيح محتوى التحويل البنكي
+- الرسائل ذات الاحتمالية المرتفعة تظهر أولاً
+- تجميع المصادر الفريدة (Sender Address) وعرض عدد الرسائل لكل مصدر
+
+**4. التصفية حسب Provider:**
+- شريط تصفية في أعلى الشاشة يحتوي على:
+  - كل المصادر
+  - Vodafone Cash
+  - Orange Cash
+  - InstaPay
+  - Bank Transfer
+- عند اختيار Provider: تُعرض فقط الرسائل التي تطابق مفاتيح محتوى ذلك Provider
+- زر «إعادة فحص»: يعيد قراءة Android SMS Provider وتحديث القائمة
+
+**5. بيانات كل مصدر في القائمة:**
 - اسم/رقم المرسل (Sender Address)
 - نوع المصدر (SMS Sender / Short Code / Application)
-- عدد الرسائل المتاحة
-- آخر رسالة (ملخص أو أول سطر)
+- عدد الرسائل المتاحة من هذا المصدر
+- آخر رسالة (معاينة أول سطر)
 - آخر وقت وصول
-- زر «اختيار»
+- Provider المكتشف تلقائياً (إن أمكن)
+- مؤشر احتمالية المصدر المالي
+- زر «اختيار» أو «إضافة يدوياً» (للمصادر غير المكتشفة تلقائياً)
 
-**زر «إعادة فحص»:** يعيد قراءة Android SMS Provider.
+**6. اختيار المصدر والموافقة عليه:**
+- عند الضغط على «اختيار»: عرض نافذة تأكيد تحتوي على:
+  - Sender Address المختار
+  - Provider المرتبط به
+  - عدد الرسائل المتاحة
+  - معاينة آخر رسالة (Raw SMS بدون تعديل)
+  - زر «تأكيد الاختيار» وزر «إلغاء»
+- عند التأكيد: الحالة → SELECTED وتبدأ Source Verification تلقائياً
+- الاختيار وحده لا يعني التوثيق
 
-**بعد الاختيار:** الحالة → SELECTED وتبدأ Source Verification تلقائياً.
+**7. الإضافة اليدوية للمصدر:**
+- زر «إضافة مصدر يدوياً» في أسفل الشاشة
+- نموذج يحتوي على:
+  - حقل Sender Address (رقم أو معرّف)
+  - اختيار Provider من قائمة (Vodafone Cash / Orange Cash / InstaPay / Bank Transfer)
+  - زر «إضافة»
+- بعد الإضافة اليدوية: تبدأ Source Verification تلقائياً على المصدر المُدخَل
 
-**ملاحظة:** الاختيار وحده لا يعني التوثيق.
+**8. تحديث قاعدة البيانات (provider_sources):**
+عند نجاح Source Verification يُحفظ في SQLite (جدول provider_sources):
+- provider_id، provider_name، service_type
+- source_id (Sender Address)
+- source_metadata
+- parser_version
+- enabled = true، verified = true
+- last_verification_at، last_verification_result = VERIFIED
+- last_message_at، last_message_summary
+- receiving_account، approved_sender_identifiers، message_patterns
 
-#### 4.5.5 توثيق المصدر (Source Verification)
+البيانات تبقى بعد إعادة تشغيل التطبيق أو الجهاز.
+
+**9. تصميم الشاشة:**
+- تصميم Minimal: فراغات واضحة، تدرج هرمي بالخط، ألوان محدودة
+- واجهة المستخدم باللغة العربية بالكامل
+- حالات الشاشة: تحميل الرسائل، قائمة فارغة (لم يُعثر على رسائل مع نص توضيحي)، قائمة بنتائج، خطأ في الصلاحية
+
+#### 4.5.4 توثيق المصدر (Source Verification)
 
 **حالات التوثيق:** DISCOVERING → SELECTED → VERIFYING → VERIFIED أو FAILED
 
@@ -264,19 +311,7 @@ Order Received → Message Search → Message Matched → Provider Verified → 
 4. إذا نجح التحقق: الحالة → VERIFIED
 5. إذا فشل: الحالة → FAILED مع سبب الفشل وتفاصيل الحقول التي لم تُستخرج
 
-**عند نجاح التوثيق يُحفظ في SQLite:**
-- provider_id، provider_name، service_type
-- source_id (Sender Address)
-- source_metadata
-- parser_version
-- enabled = true، verified = true
-- last_verification_at، last_verification_result = VERIFIED
-- last_message_at، last_message_summary
-- receiving_account، approved_sender_identifiers، message_patterns
-
-**البيانات تبقى بعد إعادة تشغيل التطبيق أو الجهاز.**
-
-#### 4.5.6 إلغاء التوثيق
+#### 4.5.5 إلغاء التوثيق
 
 - verified = false، source config = null في SQLite
 - SMS Reader يتوقف فوراً عن استخدام هذا المصدر
@@ -284,13 +319,13 @@ Order Received → Message Search → Message Matched → Provider Verified → 
 - لا تُحذف المعاملات السابقة
 - لا يرث أي توثيق جديد بيانات التوثيق القديم
 
-#### 4.5.7 Provider Test Mode
+#### 4.5.6 Provider Test Mode
 
 **المعروض:** Detected Provider، Parsed Amount، Sender، Recipient، Transaction ID/Reference، Date، Time، Balance (إن وُجد)، Confidence، Validation Errors.
 
 **قاعدة صارمة:** لا يُرسَل أي شيء إلى الخادم في هذا الوضع.
 
-#### 4.5.8 Live Status لكل Provider
+#### 4.5.7 Live Status لكل Provider
 
 - حالة المصدر الحالية (VERIFIED / UNVERIFIED / FAILED)
 - حالة SMS Reader لهذا Provider
@@ -403,7 +438,7 @@ Permissions، SMS Reader، Payment Source Verification، Backend، Realtime، No
 **قاعدة صارمة:** جميع الشاشات تشتق حالتها من نفس Status Engine الفعلي. ممنوع default=true/active=true/connected=true/registered=true/synced=true لمجرد إنشاء كائن.
 
 **Agent Smart Summary مشتق من Status Engine:**
-يحسب Status Engine حالة مركّبة تجمع: حالة الاتصال + SMS Permission + عدد Providers الموثقة + حالة Background Service. الحالة المركّبة هي المصدر الوحيد لملخص الوكيل في Dashboard.
+يحسب Status Engine حالة مركّبة تجمع: حالة الاتصال + SMS Permission + عدد Providers الموثقة + حالة Background Service.
 
 ---
 
@@ -446,7 +481,7 @@ Backend → Realtime Event → App receives event → Local persistence → Orde
 
 ### 5.6 نظام Source Verification — القواعد الجوهرية
 
-#### 5.6.1 نموذج بيانات Provider في SQLite
+#### 5.6.1 نموذج بيانات Provider في SQLite (جدول provider_sources)
 
 - provider_id، provider_name، service_type
 - source_id (Sender Address)
@@ -457,14 +492,14 @@ Backend → Realtime Event → App receives event → Local persistence → Orde
 - last_message_at، last_message_summary
 - receiving_account، approved_sender_identifiers، message_patterns
 
-#### 5.6.2 قاعدة SMS Reader — مطابقة المصدر بنوع الطلب (محدَّثة)
+#### 5.6.2 قاعدة SMS Reader — مطابقة المصدر بنوع الطلب
 
 قبل تمرير أي رسالة SMS إلى Parser:
 1. التحقق من أن Provider لديه verified = true في SQLite
 2. التحقق من أن source_id المسجّل يطابق Sender Address الرسالة
-3. **التحقق من أن نوع Provider المسجّل يطابق نوع Provider المطلوب في الطلب الحالي**
+3. التحقق من أن نوع Provider المسجّل يطابق نوع Provider المطلوب في الطلب الحالي
 
-القاعدة: رسالة Vodafone Cash لا تُستخدم للتحقق من طلب Orange Cash، ورسالة InstaPay لا تُستخدم للتحقق من طلب Vodafone Cash، وهكذا لكل Provider.
+القاعدة: رسالة Vodafone Cash لا تُستخدم للتحقق من طلب Orange Cash، ورسالة InstaPay لا تُستخدم للتحقق من طلب Vodafone Cash.
 
 إذا لم يتحقق أي من الشروط الثلاثة: الرسالة → UNTRUSTED_SOURCE أو PROVIDER_MISMATCH، لا تدخل في التحقق المالي.
 
@@ -476,13 +511,7 @@ Backend → Realtime Event → App receives event → Local persistence → Orde
 
 #### 5.6.4 سجلات الرسائل المحلية
 
-تمييز واضح بين:
-- RAW_MESSAGE
-- PARSED_MESSAGE
-- PAYMENT_CANDIDATE
-- VERIFIED_PAYMENT
-- REJECTED_PAYMENT
-- REVIEW_REQUIRED
+تمييز واضح بين: RAW_MESSAGE، PARSED_MESSAGE، PAYMENT_CANDIDATE، VERIFIED_PAYMENT، REJECTED_PAYMENT، REVIEW_REQUIRED.
 
 قراءة SMS لا تعني تأكيد الدفع.
 
@@ -650,6 +679,7 @@ NEW → QUEUED → SCANNING → REJECTED
 - حفظ وقت استلام SMS الفعلي بدقة
 - حفظ حالة Source Verification لكل Provider
 - حفظ Pending Orders وScan State وVerification Results وSync Queue
+- شاشة اكتشاف واختيار مصادر SMS تعمل بالكامل بدون اتصال بالخادم
 
 **قائمة انتظار الإجراءات (Offline Action Queue):**
 - كل إجراء يتطلب اتصالاً بالخادم (Confirm، Reject، Sync) يُضاف إلى Offline Queue محلياً
@@ -660,12 +690,10 @@ NEW → QUEUED → SCANNING → REJECTED
 - Network callback يُشغّل مسار المصالحة فور استعادة الاتصال
 - مسار المصالحة: Reconnect → تحقق Device Registration → Fetch Pending Orders → Reconcile Local Queue → Match Local Transactions → Sync Results → تحديث Last Sync
 - كل عنصر في Queue يُعالَج بترتيب FIFO مع exponential backoff عند الفشل
-- عند نجاح Sync: تحديث حالة العنصر إلى SYNCED وتحديث Last Sync في Dashboard
 - عند فشل Sync بعد عدد محدد من المحاولات: تصنيف العنصر SYNC_FAILED وإظهاره في Diagnostics
 
 **قاعدة الصلاحية الزمنية Offline:**
 - SMS التي تصل أثناء Offline تُسجَّل محلياً مع وقت الاستلام الفعلي وتُطابَق عند الاتصال
-- إذا أُنشئ الطلب أثناء Offline لا يُرفض لمجرد مرور وقت؛ يتم تقييم الصلاحية اعتماداً على وقت وصول الرسالة الفعلي المحفوظ محلياً
 - نافذة البحث لا تتجاوز 24 ساعة من timestamp الطلب وفق سياسة الخادم
 
 ---
@@ -696,7 +724,7 @@ Reconnect → تحقق Device Registration → Fetch Pending Orders → Reconcil
 - تحديث الحالة: Health Check فعلي
 - تشخيص مفصل: فتح Diagnostics بنتائج حقيقية
 
-**قاعدة:** جميع أزرار Agent تنفذ إجراءات فعلية وليست وهمية. نتيجة كل زر تنعكس على Status Engine وDashboard.
+**قاعدة:** جميع أزرار Agent تنفذ إجراءات فعلية وليست وهمية.
 
 ---
 
@@ -716,6 +744,7 @@ Reconnect → تحقق Device Registration → Fetch Pending Orders → Reconcil
 - Source revoked
 - SMS from untrusted source blocked
 - SMS provider mismatch blocked
+- Manual source added (masked source_id)
 
 **ممنوع تسجيل:** API keys، Anon Key، passwords، secrets، authorization headers، raw credentials، raw SMS حساسة.
 
@@ -759,6 +788,7 @@ Reconnect → تحقق Device Registration → Fetch Pending Orders → Reconcil
 | SMS من مصدر غير موثق | UNTRUSTED_SOURCE، لا تدخل في التحقق المالي |
 | SMS من مصدر موثق لكن Provider مختلف عن الطلب | PROVIDER_MISMATCH، لا تدخل في التحقق المالي |
 | SMS Permission مرفوضة | رسالة واضحة + زر إعداد Android، إيقاف التدفق |
+| SMS Permission مرفوضة نهائياً في شاشة الاكتشاف | رسالة واضحة + زر مباشر لإعدادات Android، إيقاف التدفق |
 | POST_NOTIFICATIONS مرفوضة | عرض تحذير في Diagnostics، الإشعارات لا تعمل |
 | لا توجد رسائل من Provider | عرض «لم يُعثر على رسائل» مع نص توضيحي |
 | Parser يفشل في استخراج الحقول | حالة FAILED مع تفاصيل الحقول الناقصة |
@@ -782,19 +812,19 @@ Reconnect → تحقق Device Registration → Fetch Pending Orders → Reconcil
 | SQLite released object | إصلاح دورة حياة الـ statement، منع الاستخدام بعد التحرير |
 | Nested transaction | منع بـ queue/mutex، تسلسل الكتابات |
 | الضغط على Card إحصائية في Dashboard | الانتقال لشاشة Orders مع تفعيل الفلتر المقابل تلقائياً |
+| مصدر مُضاف يدوياً لا تجد له رسائل | Source Verification تُشغَّل وتُعيد FAILED مع سبب واضح |
+| شاشة الاكتشاف في وضع Offline | عرض الرسائل المحلية المتاحة بدون الحاجة لخادم |
 
 ---
 
 ## 8. خطة التنفيذ التدريجية
 
 ### المرحلة A — Audit الكامل
-
 1. فحص شامل للمشروع وإنشاء مصفوفة Audit الداخلية
 2. تحديد: ما يعمل، ما هو جزئي، ما هو مزيف، ما هو معطوب، ما هو مكرر، ما هو متعارض
 3. التحقق من اكتمال تنفيذ Phase I السابقة وتوثيق أي ثغرات
 
 ### المرحلة B — الاستقرار
-
 1. إصلاح SQLite lifecycle: released objects، nested transactions، concurrent writes
 2. إصلاح duplicate polling/sync jobs
 3. إصلاح duplicate listeners/realtime subscriptions
@@ -804,71 +834,68 @@ Reconnect → تحقق Device Registration → Fetch Pending Orders → Reconcil
 **التحقق:** typecheck، lint، build، unit tests لـ Database Layer
 
 ### المرحلة C — Status Engine الموحد
-
 1. إنشاء أو توحيد Status Engine
 2. إنشاء Permission Manager الموحد
-3. مراجعة app.json وإضافة الصلاحيات الناقصة (POST_NOTIFICATIONS وغيرها)
+3. مراجعة app.json وإضافة الصلاحيات الناقصة
 4. تحديث جميع الشاشات لتشتق حالتها من Status Engine
 5. إزالة جميع الحالات الافتراضية الإيجابية الزائفة
 6. بناء Agent Smart Summary المشتق من Status Engine
 
 ### المرحلة D — Provider Sources
-
-1. تحديث نموذج بيانات Provider في SQLite
+1. تحديث نموذج بيانات Provider في SQLite (جدول provider_sources)
 2. إصلاح الحالة الحالية: أي Provider بدون verified=true يُعرض «غير موثق»
-3. تطوير Source Discovery من Android SMS Provider
-4. تطوير شاشة Source Selection
-5. تطوير Source Verification Engine
-6. حفظ نتيجة التوثيق في SQLite
-7. تحديث SMS Reader: إضافة Source Validation + Provider Type Matching
-8. تسجيل UNTRUSTED_SOURCE وPROVIDER_MISMATCH في Local Transaction Ledger
+3. تطوير شاشة اكتشاف واختيار مصادر SMS [جديد]:
+   - التحقق من صلاحية READ_SMS وتوجيه المستخدم
+   - قراءة Android SMS Provider وعرض القائمة
+   - تطوير منطق الاكتشاف الذكي وترتيب الرسائل حسب احتمالية المصدر المالي
+   - تطوير شريط التصفية حسب Provider
+   - تطوير تدفق الاختيار والتأكيد
+   - تطوير نموذج الإضافة اليدوية
+   - دعم وضع عدم الاتصال
+4. تطوير Source Verification Engine
+5. حفظ نتيجة التوثيق في SQLite (جدول provider_sources)
+6. تحديث SMS Reader: إضافة Source Validation + Provider Type Matching
+7. تسجيل UNTRUSTED_SOURCE وPROVIDER_MISMATCH في Local Transaction Ledger
 
-**التحقق:** unit tests لـ Source Verification Engine، SMS Reader tests
+**التحقق:** unit tests لـ Source Verification Engine، SMS Reader tests، اختبار شاشة الاكتشاف
 
 ### المرحلة E — Backend/Realtime
-
 1. مراجعة وإعادة استخدام Backend Connector الموجود
 2. إصلاح Realtime: تشغيل حي، reconnect مع backoff، event deduplication
 3. Polling كـ fallback محكوم
 4. إصلاح مسار عودة الاتصال
 
 ### المرحلة F — Offline Queue التعزيز
-
 1. تعزيز Offline Action Queue: هيكل البيانات، idempotency_key، retry_count
 2. تطوير مسار إعادة المزامنة التلقائية عند استعادة الاتصال
 3. معالجة SYNC_FAILED وعرضه في Diagnostics
 4. التحقق من صحة وقت استلام SMS المحفوظ محلياً عند المطابقة بعد Offline
 
 ### المرحلة G — Notifications
-
 1. إصلاح زر Bell وNotification Center
 2. إصلاح Android notifications مع مراعاة POST_NOTIFICATIONS على Android 13+
 3. event deduplication بـ idempotency ID
 4. إضافة إشعارات Source Verified / Source Verification Failed
 
 ### المرحلة H — Dashboard التفاعلي
-
 1. تحويل Cards إحصائيات الطلبات إلى عناصر قابلة للضغط
 2. تطوير التنقل من Dashboard إلى Orders مع تمرير الفلتر المحدد
 3. تطوير Agent Smart Summary في Dashboard
 4. التأكد من تحديث Counters فورياً عند وصول Realtime events
 
 ### المرحلة I — Agent Services
-
 1. التحقق من اكتمال تنفيذ Phase I السابقة لخدمات Agent
-2. إصلاح أزرار Agent لتكون فعلية: مسح SMS، تشغيل/إيقاف الوكيل، تشخيص مفصل، تحديث الحالة
+2. إصلاح أزرار Agent لتكون فعلية
 3. إصلاح SMS lifecycle
 4. إصلاح Background Agent وBoot Receiver
 
 ### المرحلة J — Orders/Diagnostics
-
 1. تحديث شاشة Orders: filters، search، details، timeline
 2. دعم تفعيل الفلتر تلقائياً عند الانتقال من Dashboard
 3. تحديث Diagnostics: أقسام حقيقية بحالات فعلية
-4. تحديث Activity Log بأحداث PROVIDER_MISMATCH
+4. تحديث Activity Log بأحداث PROVIDER_MISMATCH والأحداث الجديدة لشاشة الاكتشاف
 
 ### المرحلة K — Validation
-
 1. تنفيذ مصفوفة الاختبارات الكاملة
 2. Android build وRelease APK/AAB
 3. Runtime validation
@@ -911,7 +938,19 @@ SMS مرفوضة/ممنوحة، POST_NOTIFICATIONS مرفوضة/ممنوحة، �
 ### K — Offline
 انقطاع الاتصال أثناء معالجة Order، حفظ SMS محلياً، إضافة إجراءات لـ Offline Queue، إعادة المزامنة التلقائية عند الاتصال، SYNC_FAILED بعد عدة محاولات.
 
-### L — End-to-End
+### L — شاشة اكتشاف واختيار مصادر SMS [جديد]
+- فتح الشاشة مع صلاحية READ_SMS ممنوحة: عرض قائمة الرسائل
+- فتح الشاشة بدون صلاحية: عرض شاشة طلب الصلاحية
+- رفض الصلاحية نهائياً: عرض رسالة + زر إعدادات Android
+- التصفية حسب كل Provider: عرض الرسائل المطابقة فقط
+- الاكتشاف الذكي: ترتيب الرسائل حسب الاحتمالية
+- اختيار مصدر والتأكيد: بدء Source Verification تلقائياً
+- إضافة مصدر يدوياً: بدء Source Verification على المصدر المُدخَل
+- وضع Offline: عرض الرسائل المحلية بدون خادم
+- مصدر مُضاف يدوياً بدون رسائل مطابقة: FAILED مع سبب واضح
+- حفظ نتيجة التوثيق في جدول provider_sources
+
+### M — End-to-End
 Nader AI ينشئ طلب شحن → Agent يستلم → Realtime فوري → إشعار → مصدر موثق ومطابق لنوع Provider الطلب → SMS مستلمة → تحليل → فحوصات مطلوبة → فحص تكرار → تأكيد → Sync إلى Nader AI → تحديث counters/status → لا تأكيد مكرر.
 
 **قاعدة الإبلاغ:** إذا لم يمكن تشغيل اختبار بسبب عدم توفر الجهاز/البيئة يُصنَّف NOT RUN أو BLOCKED — لا يُدَّعى PASS.
@@ -929,7 +968,8 @@ Nader AI ينشئ طلب شحن → Agent يستلم → Realtime فوري → �
 - Request filtering وOrder contract
 - Order Normalizer والنموذج الداخلي الموحد
 - Provider architecture وparsers
-- Source Verification System: نموذج البيانات، تدفق التوثيق، قواعد SMS Reader، Provider Type Matching
+- Source Verification System: نموذج البيانات (جدول provider_sources)، تدفق التوثيق، قواعد SMS Reader، Provider Type Matching
+- شاشة اكتشاف واختيار مصادر SMS: تدفق الاكتشاف، منطق الترتيب الذكي، الإضافة اليدوية، دعم Offline
 - Verification rules متعددة المراحل و24h time window
 - Transaction uniqueness وidempotency
 - Offline Queue التعزيز: هيكل البيانات، مسار إعادة المزامنة، SYNC_FAILED
@@ -954,7 +994,7 @@ Nader AI ينشئ طلب شحن → Agent يستلم → Realtime فوري → �
 8. Notification Center يعمل من زر Bell
 9. Android notifications تعمل ضمن قواعد Android بما فيها POST_NOTIFICATIONS على Android 13+
 10. Diagnostics تعكس الحالة الفعلية
-11. أزرار Agent فعلية وليست وهمية: مسح SMS، تشغيل/إيقاف الوكيل، تشخيص مفصل، تحديث الحالة
+11. أزرار Agent فعلية وليست وهمية
 12. أخطاء SQLite transaction conflicts مُصلَحة
 13. أخطاء released-object/use-after-release مُصلَحة
 14. منع التكرار في المعالجة
@@ -972,6 +1012,11 @@ Nader AI ينشئ طلب شحن → Agent يستلم → Realtime فوري → �
 26. الاختبارات مُنفَّذة ومُبلَّغ عنها بصدق
 27. Runtime مُتحقَّق منه
 28. جميع واجهات المستخدم باللغة العربية
+29. شاشة اكتشاف واختيار مصادر SMS تعمل بالكامل في وضع Offline
+30. الاكتشاف الذكي يرتب المصادر المالية أولاً بناءً على مفاتيح محتوى كل Provider
+31. الإضافة اليدوية للمصدر تُشغّل Source Verification تلقائياً
+32. نتيجة التوثيق تُحفظ في جدول provider_sources في SQLite
+33. شاشة الاكتشاف تعرض رسالة واضحة وزر إعدادات Android عند رفض READ_SMS نهائياً
 
 ---
 

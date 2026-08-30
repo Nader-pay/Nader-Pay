@@ -1,14 +1,13 @@
 import { useCallback, useState } from 'react';
 import {
   ActivityIndicator,
-  Modal,
   Pressable,
   RefreshControl,
   ScrollView,
   Text,
   View,
 } from 'react-native';
-import { useFocusEffect } from 'expo-router';
+import { useFocusEffect, useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
@@ -20,19 +19,11 @@ import {
   ShieldCheck,
   ShieldAlert,
   Search,
-  AlertTriangle,
-  Loader,
 } from 'lucide-react-native';
 
 import { useAgent } from '@/contexts/AgentContext';
 import { getIndexedSmsStats, getIndexedSmsCount } from '@/services/localSmsIndex';
-import {
-  listProviderSources,
-  upsertProviderSource,
-  type ProviderSource,
-} from '@/services/providerSourceService';
-import { discoverSmsSources, verifySourceWithParser, type SmsSource } from '@/services/sourceDiscovery';
-import { createHash } from '@/lib/hash';
+import { listProviderSources, type ProviderSource } from '@/services/providerSourceService';
 import type { ProviderName } from '@/types/agent';
 
 const PROVIDERS: {
@@ -57,6 +48,7 @@ const statusInfo: Record<string, { label: string; color: string }> = {
 
 export default function PaymentSourcesScreen() {
   const { state, settings, refreshOrders, runDiagnostics } = useAgent();
+  const router = useRouter();
   const insets = useSafeAreaInsets();
   const [refreshing, setRefreshing] = useState(false);
   const [stats, setStats] = useState<Record<ProviderName, { messages: number; lastAt: string | null }>>({
@@ -74,11 +66,6 @@ export default function PaymentSourcesScreen() {
     unknown: null,
   });
   const [loading, setLoading] = useState(true);
-  const [discovering, setDiscovering] = useState<ProviderName | null>(null);
-  const [discovered, setDiscovered] = useState<SmsSource[]>([]);
-  const [selectedProvider, setSelectedProvider] = useState<ProviderName | null>(null);
-  const [verifyResult, setVerifyResult] = useState<string | null>(null);
-  const [verifyResultOk, setVerifyResultOk] = useState<boolean | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -160,71 +147,6 @@ export default function PaymentSourcesScreen() {
     return map;
   }, [state.pendingOrders])();
 
-  const handleDiscover = async (provider: ProviderName) => {
-    setVerifyResult(null);
-    if (process.env.EXPO_OS === 'web') {
-      setVerifyResult('اكتشاف المصادر يتطلب جهاز Android.');
-      setVerifyResultOk(false);
-      return;
-    }
-    setDiscovering(provider);
-    setSelectedProvider(provider);
-    setDiscovered([]);
-    try {
-      const smsSources = await discoverSmsSources();
-      const filtered = smsSources.filter((s) => s.providerHint === provider);
-      setDiscovered(filtered);
-      if (filtered.length === 0) {
-        setVerifyResult(`لا توجد مصادر مطابقة لـ ${PROVIDERS.find((p) => p.key === provider)?.label}.`);
-        setVerifyResultOk(false);
-      }
-    } catch (err) {
-      setVerifyResult(err instanceof Error ? err.message : 'فشل الاكتشاف');
-      setVerifyResultOk(false);
-    } finally {
-      setDiscovering(null);
-    }
-  };
-
-  const handleSelectSource = async (provider: ProviderName, source: SmsSource) => {
-    setDiscovering(provider);
-    const result = await verifySourceWithParser(source, provider);
-    const now = new Date().toISOString();
-    const id = createHash(`${provider}:${source.sourceId}`);
-    const newSource: ProviderSource = {
-      id,
-      providerId: provider,
-      providerName: PROVIDERS.find((p) => p.key === provider)?.label ?? provider,
-      sourceId: source.sourceId,
-      sourceType: 'sms',
-      sourceMetadata: {
-        messageCount: source.messageCount,
-        displayName: source.displayName,
-        samples: source.rawMessages.map((m) => m.body.slice(0, 120)),
-      },
-      parserVersion: '1',
-      receivingAccount: null,
-      approvedSenderIdentifiers: [source.sourceId],
-      messagePatterns: [],
-      verified: result.passed,
-      enabled: result.passed,
-      status: result.passed ? 'verified' : 'failed',
-      lastMessageAt: source.lastMessageAt,
-      lastMessageSummary: source.lastMessageSummary,
-      lastVerificationAt: now,
-      lastVerificationResult: result.reason,
-      createdAt: now,
-      updatedAt: now,
-    };
-    await upsertProviderSource(newSource);
-    setDiscovered([]);
-    setSelectedProvider(null);
-    setDiscovering(null);
-    setVerifyResult(result.reason);
-    setVerifyResultOk(result.passed);
-    await load();
-  };
-
   const totalMessages = Object.values(stats).reduce((a, b) => a + b.messages, 0);
 
   return (
@@ -297,15 +219,10 @@ export default function PaymentSourcesScreen() {
                   </Text>
 
                   <Pressable
-                    onPress={() => handleDiscover(p.key)}
-                    disabled={discovering === p.key}
+                    onPress={() => router.push(`/discovery?provider=${encodeURIComponent(p.key)}` as any)}
                     className="mt-2 flex-row items-center justify-center gap-2 px-3 py-2.5 rounded-xl bg-primary active:opacity-70"
                   >
-                    {discovering === p.key ? (
-                      <Loader size={16} className="text-primary-foreground" />
-                    ) : (
-                      <Search size={16} color="#ffffff" />
-                    )}
+                    <Search size={16} color="#ffffff" />
                     <Text className="text-sm font-semibold text-primary-foreground">
                       {source?.verified ? 'إعادة التوثيق' : 'اكتشاف وتوثيق المصدر'}
                     </Text>
@@ -321,71 +238,9 @@ export default function PaymentSourcesScreen() {
                 رسائل Android SMS Provider وتحديد المصدر الصحيح.
               </Text>
             </View>
-
-            {verifyResult && (
-              <View
-                className={`px-4 py-4 border border-border rounded-2xl gap-2 ${
-                  verifyResultOk ? 'bg-green-50' : 'bg-red-50'
-                }`}
-              >
-                <Text className={`text-sm font-semibold ${verifyResultOk ? 'text-green-700' : 'text-red-700'}`}>
-                  {verifyResultOk ? 'نتيجة التوثيق' : 'تنبيه'}
-                </Text>
-                <Text className={`text-xs leading-5 ${verifyResultOk ? 'text-green-600' : 'text-red-600'}`}>
-                  {verifyResult}
-                </Text>
-              </View>
-            )}
           </View>
         )}
       </ScrollView>
-
-      <Modal
-        visible={selectedProvider !== null}
-        transparent
-        animationType="slide"
-        onRequestClose={() => setSelectedProvider(null)}
-      >
-        <View className="flex-1 bg-black/40 justify-end">
-          <View className="bg-background rounded-t-3xl p-5 gap-4 max-h-[80%]">
-            <View className="flex-row items-center justify-between">
-              <Text className="text-lg font-bold text-foreground">
-                مصادر SMS: {PROVIDERS.find((p) => p.key === selectedProvider)?.label}
-              </Text>
-              <Pressable onPress={() => setSelectedProvider(null)}>
-                <XCircle size={24} color="#6b7280" />
-              </Pressable>
-            </View>
-            {discovering === selectedProvider ? (
-              <View className="items-center py-8 gap-2">
-                <ActivityIndicator />
-                <Text className="text-sm text-muted-foreground">جاري قراءة رسائل الجهاز...</Text>
-              </View>
-            ) : discovered.length === 0 ? (
-              <View className="items-center py-8 gap-2">
-                <AlertTriangle size={32} color="#f59e0b" />
-                <Text className="text-sm text-muted-foreground">لا توجد مصادر مطابقة.</Text>
-              </View>
-            ) : (
-              <ScrollView className="gap-2">
-                {discovered.map((source) => (
-                  <Pressable
-                    key={source.sourceId}
-                    onPress={() => selectedProvider && handleSelectSource(selectedProvider, source)}
-                    className="p-4 border border-border rounded-2xl bg-card active:opacity-70 gap-2"
-                  >
-                    <Text className="text-base font-semibold text-foreground">{source.displayName}</Text>
-                    <Text className="text-xs text-muted-foreground">{source.lastMessageSummary}</Text>
-                    <Text className="text-xs text-muted-foreground">
-                      {source.messageCount} رسالة • آخر رسالة: {formatDate(source.lastMessageAt)}
-                    </Text>
-                  </Pressable>
-                ))}
-              </ScrollView>
-            )}
-          </View>
-        </View>
-      </Modal>
     </View>
   );
 }
