@@ -932,9 +932,15 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
 
       setSettings(loadedSettings);
       setDeviceState(loadedDevice);
-      const permissions = await getPermissionSnapshot();
+
+      // طلب أذونات SMS و الإشعارات تلقائياً عند أول تشغيل
+      let permissions = await getPermissionSnapshot();
+      if (permissions.sms !== 'granted') {
+        await requestSmsPermission();
+        permissions = await getPermissionSnapshot();
+      }
+
       const online = await checkOnline();
-      const deviceRegistered = Boolean(loadedDevice.deviceId && loadedDevice.deviceToken);
       const snapshot = buildStatusSnapshot(
         {
           settings: loadedSettings,
@@ -959,8 +965,8 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
           ...s.diagnostics,
           agentRunning: snapshot.agentRunning,
           network: snapshot.network,
-          smsReady: snapshot.smsPermission === 'granted',
-          notifications: snapshot.notificationsPermission === 'granted',
+          smsReady: permissions.sms === 'granted',
+          notifications: permissions.notifications === 'granted',
           backgroundAgent: snapshot.backgroundAgent,
           deviceRegistered: snapshot.deviceRegistered,
           databaseReady: snapshot.databaseReady,

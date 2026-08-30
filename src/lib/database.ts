@@ -276,6 +276,54 @@ export const dbReady = SQLite.openDatabaseAsync(DB_NAME, DB_OPTIONS)
     await db.execAsync('CREATE INDEX IF NOT EXISTS idx_orders_transaction_id ON orders_cache(transaction_id)');
   }
 
+  // Migration: add columns to local_sms_index (added in later schema versions)
+  const smsColumns = await db.getAllAsync<{ name: string }>("PRAGMA table_info('local_sms_index')");
+  const smsColNames = new Set(smsColumns.map((c) => c.name));
+  if (!smsColNames.has('provider')) {
+    await db.execAsync('ALTER TABLE local_sms_index ADD COLUMN provider TEXT');
+    await db.execAsync('CREATE INDEX IF NOT EXISTS idx_sms_provider ON local_sms_index(provider)');
+  }
+  if (!smsColNames.has('transaction_id')) {
+    await db.execAsync('ALTER TABLE local_sms_index ADD COLUMN transaction_id TEXT');
+    await db.execAsync('CREATE INDEX IF NOT EXISTS idx_sms_transaction ON local_sms_index(transaction_id)');
+  }
+  if (!smsColNames.has('amount')) {
+    await db.execAsync('ALTER TABLE local_sms_index ADD COLUMN amount REAL');
+    await db.execAsync('CREATE INDEX IF NOT EXISTS idx_sms_amount ON local_sms_index(amount)');
+  }
+  if (!smsColNames.has('sender_phone')) {
+    await db.execAsync('ALTER TABLE local_sms_index ADD COLUMN sender_phone TEXT');
+    await db.execAsync('CREATE INDEX IF NOT EXISTS idx_sms_sender ON local_sms_index(sender_phone)');
+  }
+  if (!smsColNames.has('sender_name')) {
+    await db.execAsync('ALTER TABLE local_sms_index ADD COLUMN sender_name TEXT');
+  }
+  if (!smsColNames.has('recipient_wallet')) {
+    await db.execAsync('ALTER TABLE local_sms_index ADD COLUMN recipient_wallet TEXT');
+  }
+  if (!smsColNames.has('recipient_account')) {
+    await db.execAsync('ALTER TABLE local_sms_index ADD COLUMN recipient_account TEXT');
+  }
+  if (!smsColNames.has('parsed_payload')) {
+    await db.execAsync('ALTER TABLE local_sms_index ADD COLUMN parsed_payload TEXT');
+  }
+
+  // Migration: add missing columns to provider_sources
+  const psColumns = await db.getAllAsync<{ name: string }>("PRAGMA table_info('provider_sources')");
+  const psColNames = new Set(psColumns.map((c) => c.name));
+  if (!psColNames.has('last_message_at')) {
+    await db.execAsync('ALTER TABLE provider_sources ADD COLUMN last_message_at TEXT');
+  }
+  if (!psColNames.has('last_message_summary')) {
+    await db.execAsync('ALTER TABLE provider_sources ADD COLUMN last_message_summary TEXT');
+  }
+  if (!psColNames.has('last_verification_at')) {
+    await db.execAsync('ALTER TABLE provider_sources ADD COLUMN last_verification_at TEXT');
+  }
+  if (!psColNames.has('last_verification_result')) {
+    await db.execAsync('ALTER TABLE provider_sources ADD COLUMN last_verification_result TEXT');
+  }
+
   return db;
 });
 
