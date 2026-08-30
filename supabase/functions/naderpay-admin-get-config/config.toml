@@ -1,0 +1,2 @@
+[functions.naderpay-admin-get-config]
+verify_jwt = false
