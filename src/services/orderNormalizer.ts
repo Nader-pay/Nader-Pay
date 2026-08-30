@@ -1,6 +1,15 @@
 import type { ProviderName } from '@/types/provider';
 import type { RawOrder, NormalizedOrder } from '@/types/backend';
 
+/** توليد UUID آمن متوافق مع Hermes (React Native) */
+function generateUUID(): string {
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === 'x' ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+}
+
 export function detectProvider(raw: RawOrder): ProviderName | null {
   const providerHint =
     (raw.provider as string | undefined) ||
@@ -27,7 +36,7 @@ export function detectProvider(raw: RawOrder): ProviderName | null {
 export function normalizeOrder(raw: RawOrder): NormalizedOrder {
   const rawOrder = raw.raw_order ?? raw;
   const rawSms = raw.raw_sms ?? null;
-  const orderId = String(raw.order_id ?? raw.id ?? crypto.randomUUID());
+  const orderId = String(raw.order_id ?? raw.id ?? generateUUID());
   const provider = detectProvider(raw);
   const amount = typeof raw.amount === 'number' ? raw.amount : parseFloat(String(raw.amount ?? '')) || 0;
   const currency = (raw.currency as string) || 'EGP';
