@@ -1,0 +1,2 @@
+[functions.verification-engine]
+verify_jwt = false
