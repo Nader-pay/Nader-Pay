@@ -22,7 +22,17 @@ export function verifyMessageSource(
   const bodyLower = message.body.toLowerCase();
   const sender = message.originatingAddress?.toLowerCase() || '';
 
+  // Fallback mode: لو التحقق من المصدر مطفيّ أو مفيش قواعد/أنماط مضبوطة،
+  // نسمح للرسالة تعدي عشان التطبيق يشتغل من أول تثبيت من غير مصادر مضافة.
   const providers: ProviderName[] = ['vodafone_cash', 'orange_cash', 'insta_pay', 'bank_transfer'];
+  const hasConfiguredRules = providers.some((p) => {
+    const config = settings.providers[p];
+    return config?.enabled && (config.sourceRules.length > 0 || config.messagePatterns.length > 0);
+  });
+
+  if (!settings.requireSourceVerification || !hasConfiguredRules) {
+    return { ok: true, provider: 'unknown' };
+  }
 
   for (const p of providers) {
     const config = settings.providers[p];

@@ -128,7 +128,7 @@ importers:
         specifier: ~55.0.8
         version: 55.0.18(expo@55.0.6)(react-native@0.83.2(@babel/core@7.29.7)(@types/react@19.2.18)(react@19.2.0))(react@19.2.0)(typescript@5.9.3)
       expo-background-task:
-        specifier: ~55.0.22
+        specifier: ~55.0.9
         version: 55.0.22(expo@55.0.6)(react-native@0.83.2(@babel/core@7.29.7)(@types/react@19.2.18)(react@19.2.0))
       expo-clipboard:
         specifier: ~55.0.8
@@ -176,7 +176,7 @@ importers:
         specifier: ~55.0.9
         version: 55.0.20(expo@55.0.6)(react-native-web@0.21.2(react-dom@19.2.0(react@19.2.0))(react@19.2.0))(react-native@0.83.2(@babel/core@7.29.7)(@types/react@19.2.18)(react@19.2.0))
       expo-task-manager:
-        specifier: ~55.0.20
+        specifier: ~55.0.9
         version: 55.0.20(expo@55.0.6)(react-native@0.83.2(@babel/core@7.29.7)(@types/react@19.2.18)(react@19.2.0))
       lucide-react-native:
         specifier: ^1.11.0
