@@ -84,7 +84,9 @@ jobs:
         id: build_apk
         run: |
           cd android
-          ./gradlew --no-daemon assembleRelease
+          mkdir -p app/build/outputs/logs
+          set -o pipefail
+          ./gradlew --no-daemon assembleRelease 2>&1 | tee app/build/outputs/logs/gradle-build.log
         env:
           KEYSTORE_PATH: ${{ github.workspace }}/android/keystore/naderpay-release.keystore
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
@@ -98,8 +100,6 @@ jobs:
           name: gradle-build-logs
           path: |
             android/app/build/outputs/logs/
-            android/build/reports/
-            android/app/build/reports/
 
       - name: Read app version
         id: version
