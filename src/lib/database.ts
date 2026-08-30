@@ -5,6 +5,16 @@ const IS_WEB = process.env.EXPO_OS === 'web';
 const DB_NAME = IS_WEB ? ':memory:' : 'naderpay_agent.db';
 const DB_OPTIONS = IS_WEB ? { useNewConnection: true } : undefined;
 
+async function runSchemaStatements(db: SQLite.SQLiteDatabase, source: string): Promise<void> {
+  const statements = source
+    .split(';')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+  for (const statement of statements) {
+    await db.execAsync(`${statement};`);
+  }
+}
+
 const dbReady = SQLite.openDatabaseAsync(DB_NAME, DB_OPTIONS)
   .catch((err) => {
     // If opening still fails on web (e.g. the runtime does not support the
@@ -122,7 +132,7 @@ const dbReady = SQLite.openDatabaseAsync(DB_NAME, DB_OPTIONS)
 
     CREATE INDEX IF NOT EXISTS idx_server_profiles_active ON server_profiles(is_active);
   `;
-    await db.execAsync(schema);
+    await runSchemaStatements(db, schema);
 
     // Verify core tables were created (Web SQLite sometimes silently skips DDL).
     const tables = await db.getAllAsync<{ name: string }>(
