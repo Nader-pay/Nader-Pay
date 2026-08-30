@@ -7,6 +7,16 @@ import type {
 } from '@/types/backend';
 import { resolveEndpoint, buildAbsoluteUrl } from './apiDiscovery';
 
+/** توليد UUID آمن متوافق مع Hermes (React Native) */
+function generateUUID(): string {
+  // Hermes لا يدعم crypto.randomUUID — نستخدم Math.random كبديل آمن
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === 'x' ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+}
+
 let lastRequestMeta: BackendRequestMeta | null = null;
 
 export function getLastBackendRequestMeta(): BackendRequestMeta | null {
@@ -60,7 +70,7 @@ export async function sendBackendRequest(
 ): Promise<ConnectionTestResult> {
   const { url, method = 'GET', body, query, extraHeaders = {} } = options;
   const startedAt = new Date().toISOString();
-  const requestId = crypto.randomUUID();
+  const requestId = generateUUID();
   const headers = { ...buildAuthHeaders(profile), ...extraHeaders };
 
   lastRequestMeta = {
