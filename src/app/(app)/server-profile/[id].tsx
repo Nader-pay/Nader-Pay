@@ -5,7 +5,7 @@ import { StatusBar } from 'expo-status-bar';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ArrowLeft, Check, Server } from 'lucide-react-native';
 
-import { getServerProfileById, saveServerProfile } from '@/services/serverProfileManager';
+import { getServerProfileById, saveServerProfile, normalizeBaseUrl } from '@/services/serverProfileManager';
 import { discoverApi } from '@/services/apiDiscovery';
 import { sendBackendRequest, testConnection } from '@/services/backendConnector';
 import { getLastBackendRequestMeta } from '@/services/backendConnector';
@@ -28,6 +28,7 @@ export default function ServerProfileScreen() {
 
   const [name, setName] = useState('');
   const [baseUrl, setBaseUrl] = useState('');
+  const [normalizedUrl, setNormalizedUrl] = useState('');
   const [authType, setAuthType] = useState<AuthType>('bearer');
   const [apiKey, setApiKey] = useState('');
   const [token, setToken] = useState('');
@@ -47,6 +48,7 @@ export default function ServerProfileScreen() {
       if (profile) {
         setName(profile.name);
         setBaseUrl(profile.baseUrl);
+        setNormalizedUrl(normalizeBaseUrl(profile.baseUrl));
         setAuthType(profile.authType);
         setApiKey(profile.apiKey || '');
         setToken(profile.token || '');
@@ -58,11 +60,15 @@ export default function ServerProfileScreen() {
     })();
   }, [id]);
 
+  useEffect(() => {
+    setNormalizedUrl(normalizeBaseUrl(baseUrl));
+  }, [baseUrl]);
+
   const buildProfile = useCallback((): ServerProfile => {
     const profile: ServerProfile = {
       id: isNew ? generateId() : id,
       name: name.trim() || 'خادم بدون اسم',
-      baseUrl: baseUrl.trim().replace(/\/$/, ''),
+      baseUrl: normalizeBaseUrl(baseUrl.trim()),
       authType,
       isActive: true,
       isConnected: false,
@@ -74,7 +80,7 @@ export default function ServerProfileScreen() {
       customHeaders: authType === 'custom' ? parseCustomHeaders(customHeaders) : undefined,
     };
     return profile;
-  }, [id, isNew, name, baseUrl, authType, apiKey, token, username, password, customHeaders]);
+  }, [id, isNew, name, baseUrl, authType, apiKey, token, username, password, customHeaders, discoveryUrl]);
 
   const handleTest = async () => {
     const profile = buildProfile();
@@ -160,7 +166,14 @@ export default function ServerProfileScreen() {
           <View className="border border-border rounded-2xl bg-card p-4 gap-4">
             <SectionTitle icon={Server} title="معلومات الخادم" />
             <Input label="الاسم" value={name} onChangeText={setName} placeholder="مثال: Nader Pay" />
-            <Input label="Base URL" value={baseUrl} onChangeText={setBaseUrl} placeholder="https://api.example.com" autoCapitalize="none" />
+            <Input label="Base URL" value={baseUrl} onChangeText={setBaseUrl} placeholder="https://ccimllgqdxuvymdeikmn.supabase.co/functions/v1/backend-proxy" autoCapitalize="none" />
+            {baseUrl.trim() && baseUrl.trim() !== normalizedUrl && (
+              <View className="px-3 py-2 rounded-xl bg-amber-50 border border-amber-200">
+                <Text className="text-xs text-amber-800">
+                  سيتم إصالاح الرابط تلقائيًا إلى: {normalizedUrl}
+                </Text>
+              </View>
+            )}
             <Input label="Discovery URL (اختياري)" value={discoveryUrl} onChangeText={setDiscoveryUrl} placeholder="/config" autoCapitalize="none" />
 
             <Text className="text-sm font-semibold text-foreground mt-2">نوع المصادقة</Text>

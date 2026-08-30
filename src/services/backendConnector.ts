@@ -17,6 +17,45 @@ function generateUUID(): string {
   });
 }
 
+/**
+ * تحويل رسائل الخطأ التقنية من الخادم إلى نصوص عربية فهمها للمستخدم */
+function humanizeBackendError(body: unknown, status: number): string | undefined {
+  if (status < 400) return undefined;
+
+  const error = (body as { error?: string; code?: string; message?: string } | undefined)?.error
+    || (body as { code?: string; message?: string } | undefined)?.message
+    || (body as string | undefined)
+    || '';
+
+  const errorText = typeof error === 'string' ? error : JSON.stringify(error);
+  const errorJson: { code?: string; message?: string } | null = typeof error === 'string'
+    ? null
+    : (error as { code?: string; message?: string });
+  const code = errorJson?.code || errorText;
+  const message = errorJson?.message || errorText;
+
+  if (status === 401 || status === 403) {
+    return 'فشل المصادقة: المفتاح غير صالح أو ليس لديك صلاحيات كافية';
+  }
+  if (code === 'NOT_FOUND' || message.includes('NOT_FOUND') || message.includes('was not found') || message.includes('لا يوجد')) {
+    return 'نقطة النهاية غير موجودة. تأكد من استخدام /functions/v1/backend-proxy في Base URL';
+  }
+  if (status === 503) {
+    return 'الخدمة معطلة حاليًا من الخادم';
+  }
+  if (code === 'DEVICE_REVOKED') {
+    return 'هذا الجهاز ملغى';
+  }
+  if (code === 'VERSION_BLOCKED') {
+    return 'نسخة التطبيق محظورة';
+  }
+  if (code === 'UPDATE_REQUIRED') {
+    return 'يجب تحديث التطبيق';
+  }
+
+  return undefined;
+}
+
 let lastRequestMeta: BackendRequestMeta | null = null;
 
 export function getLastBackendRequestMeta(): BackendRequestMeta | null {
@@ -94,9 +133,17 @@ export async function sendBackendRequest(
         error: errorMsg || error.message,
       };
       lastRequestMeta = meta;
+      const status = (error as any)?.status || (error as any)?.context?.status || 0;
+      const bodyText = typeof errorMsg === 'string' ? errorMsg : error.message;
+      let parsedBody: unknown = bodyText;
+      try {
+        parsedBody = JSON.parse(bodyText);
+      } catch {
+        // keep as text
+      }
       return {
         ok: false,
-        error: errorMsg || error.message,
+        error: humanizeBackendError(parsedBody, status) || errorMsg || error.message,
         endpoint: url,
         method,
         requestId,
@@ -120,6 +167,7 @@ export async function sendBackendRequest(
     };
     lastRequestMeta = meta;
 
+    const friendlyError = humanizeBackendError(result.body, result.status);
     return {
       ok: result.ok,
       status: result.status,
@@ -129,6 +177,7 @@ export async function sendBackendRequest(
       responseBody: result.body,
       requestId: result.requestId,
       authOk: result.status !== 401 && result.status !== 403,
+      error: friendlyError,
     };
   } catch (err) {
     const meta: BackendRequestMeta = {
