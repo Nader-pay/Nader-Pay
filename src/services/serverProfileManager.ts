@@ -93,6 +93,38 @@ function parseApiContract(raw: string | null): BackendApiContract | undefined {
   }
 }
 
+/** تصحيح رابط الخادم للتأكد من استخدام backend-proxy كـ Edge Function رئيسية */
+export function normalizeBaseUrl(url: string): string {
+  let normalized = url.trim().replace(/\/$/, '');
+  // إذا المستخدم أدخل function اسمها بالغلط， نصححها تلقائيًا
+  normalized = normalized.replace(/\/functions\/v1\/[^/]+$/i, '/functions/v1/backend-proxy');
+  return normalized;
+}
+
+/** التحقق مما إذا كان الرابط يشير إلى backend-proxy أم لا */
+export function validateServerBaseUrl(url: string): { ok: boolean; normalized?: string; error?: string } {
+  const trimmed = url.trim();
+  if (!trimmed) return { ok: false, error: 'Base URL مطلوب' };
+  if (!trimmed.startsWith('http://') && !trimmed.startsWith('https://')) {
+    return { ok: false, error: 'Base URL يجب أن يبدأ بـ http:// أو https://' };
+  }
+  try {
+    new URL(trimmed);
+  } catch {
+    return { ok: false, error: 'Base URL غير صالح' };
+  }
+  const normalized = normalizeBaseUrl(trimmed);
+  const usesBackendProxy = /\/functions\/v1\/backend-proxy$/i.test(normalized);
+  if (!usesBackendProxy) {
+    return {
+      ok: false,
+      error: 'يجب أن ينتهي الرابط بـ /functions/v1/backend-proxy',
+      normalized,
+    };
+  }
+  return { ok: true, normalized };
+}
+
 async function hydrateProfile(meta: {
   id: string;
   name: string;
@@ -135,10 +167,11 @@ async function hydrateProfile(meta: {
 }
 
 export async function saveServerProfile(profile: ServerProfile): Promise<void> {
+  const normalized = normalizeBaseUrl(profile.baseUrl);
   await saveProfileMeta({
     id: profile.id,
     name: profile.name,
-    baseUrl: profile.baseUrl,
+    baseUrl: normalized,
     authType: profile.authType,
     apiKey: profile.authType === 'api_key' ? profile.apiKey : null,
     token: profile.authType === 'bearer' ? profile.token : null,
