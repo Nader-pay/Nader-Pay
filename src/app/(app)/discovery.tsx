@@ -141,16 +141,22 @@ export default function SourceDiscoveryScreen() {
   }, [permissionGranted, loadSources]);
 
   const requestAccess = async () => {
-    setPermissionRequested(true);
     if (process.env.EXPO_OS === 'web') {
+      setPermissionRequested(true);
       setPermissionGranted(false);
       return;
     }
+    setPermissionRequested(true);
     const granted = await requestSmsPermission();
     await checkPermission();
     if (granted) {
       await loadSources();
     }
+  };
+
+  const openAppSettings = async () => {
+    if (process.env.EXPO_OS === 'web') return;
+    await openSettings();
   };
 
   const onRefresh = useCallback(async () => {
@@ -330,12 +336,16 @@ export default function SourceDiscoveryScreen() {
               </AlertDescription>
               <View className="flex-row gap-2 mt-3 pl-6">
                 <Pressable
-                  onPress={permissionRequested ? openSettings : requestAccess}
+                  onPress={permissionRequested ? openAppSettings : requestAccess}
                   className="flex-row items-center gap-2 px-3 py-2 rounded-lg bg-primary active:opacity-70"
                 >
                   {permissionRequested ? <Settings size={16} color="#ffffff" /> : <Smartphone size={16} color="#ffffff" />}
                   <Text className="text-sm font-semibold text-primary-foreground">
-                    {permissionRequested ? 'فتح الإعدادات' : 'منح الصلاحية'}
+                    {permissionRequested
+                      ? process.env.EXPO_OS === 'web'
+                        ? 'يتطلب Android'
+                        : 'فتح الإعدادات'
+                      : 'منح الصلاحية'}
                   </Text>
                 </Pressable>
               </View>
