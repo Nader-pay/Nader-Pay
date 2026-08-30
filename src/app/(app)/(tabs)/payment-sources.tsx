@@ -69,44 +69,49 @@ export default function PaymentSourcesScreen() {
 
   const load = useCallback(async () => {
     setLoading(true);
-    const [rows, total, providerSources] = await Promise.all([
-      getIndexedSmsStats(),
-      getIndexedSmsCount(),
-      listProviderSources(),
-    ]);
-    const next: typeof stats = {
-      vodafone_cash: { messages: 0, lastAt: null },
-      orange_cash: { messages: 0, lastAt: null },
-      insta_pay: { messages: 0, lastAt: null },
-      bank_transfer: { messages: 0, lastAt: null },
-      unknown: { messages: 0, lastAt: null },
-    };
-    for (const row of rows) {
-      const key = row.provider as ProviderName;
-      if (key in next) {
-        next[key] = { messages: row.count, lastAt: row.lastReceivedAt };
-      } else {
-        next.unknown.messages += row.count;
-        if (row.lastReceivedAt && (!next.unknown.lastAt || row.lastReceivedAt > next.unknown.lastAt)) {
-          next.unknown.lastAt = row.lastReceivedAt;
+    try {
+      const [rows, , providerSources] = await Promise.all([
+        getIndexedSmsStats().catch(() => []),
+        getIndexedSmsCount().catch(() => 0),
+        listProviderSources().catch(() => []),
+      ]);
+      const next: typeof stats = {
+        vodafone_cash: { messages: 0, lastAt: null },
+        orange_cash: { messages: 0, lastAt: null },
+        insta_pay: { messages: 0, lastAt: null },
+        bank_transfer: { messages: 0, lastAt: null },
+        unknown: { messages: 0, lastAt: null },
+      };
+      for (const row of rows) {
+        const key = row.provider as ProviderName;
+        if (key in next) {
+          next[key] = { messages: row.count, lastAt: row.lastReceivedAt };
+        } else {
+          next.unknown.messages += row.count;
+          if (row.lastReceivedAt && (!next.unknown.lastAt || row.lastReceivedAt > next.unknown.lastAt)) {
+            next.unknown.lastAt = row.lastReceivedAt;
+          }
         }
       }
-    }
-    const byProvider: typeof sources = {
-      vodafone_cash: null,
-      orange_cash: null,
-      insta_pay: null,
-      bank_transfer: null,
-      unknown: null,
-    };
-    for (const src of providerSources) {
-      if (src.providerId in byProvider) {
-        byProvider[src.providerId as ProviderName] = src;
+      const byProvider: typeof sources = {
+        vodafone_cash: null,
+        orange_cash: null,
+        insta_pay: null,
+        bank_transfer: null,
+        unknown: null,
+      };
+      for (const src of providerSources) {
+        if (src.providerId in byProvider) {
+          byProvider[src.providerId as ProviderName] = src;
+        }
       }
+      setStats(next);
+      setSources(byProvider);
+    } catch (err) {
+      console.warn('[payment-sources] load error:', err);
+    } finally {
+      setLoading(false);
     }
-    setStats(next);
-    setSources(byProvider);
-    setLoading(false);
   }, []);
 
   useFocusEffect(
