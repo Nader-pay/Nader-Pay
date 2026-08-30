@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Pressable,
@@ -25,7 +25,9 @@ import {
   Radio,
   Settings,
   Play,
+  Square,
   Zap,
+  CheckCircle2,
 } from 'lucide-react-native';
 
 import { useAgent } from '@/contexts/AgentContext';
@@ -39,6 +41,21 @@ export default function HomeScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [unread, setUnread] = useState(0);
   const [notifMarked, setNotifMarked] = useState(false);
+
+  // حالات تحميل الأزرار
+  const [agentToggleLoading, setAgentToggleLoading] = useState(false);
+  const [scanLoading, setScanLoading] = useState(false);
+  const [syncLoading, setSyncLoading] = useState(false);
+
+  // آخر فعل ناجح لإظهار إشعار لحظي
+  const [lastAction, setLastAction] = useState<string | null>(null);
+  const lastActionTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const showActionFeedback = (msg: string) => {
+    if (lastActionTimer.current) clearTimeout(lastActionTimer.current);
+    setLastAction(msg);
+    lastActionTimer.current = setTimeout(() => setLastAction(null), 3000);
+  };
 
   useFocusEffect(
     useCallback(() => {
@@ -86,7 +103,45 @@ export default function HomeScreen() {
     state.diagnostics.backendStatus
   );
 
-  const agentEnabled = state.diagnostics.agentRunning;
+  const agentRunning = state.diagnostics.agentRunning;
+
+  const handleToggleAgent = async () => {
+    if (agentToggleLoading) return;
+    setAgentToggleLoading(true);
+    try {
+      if (agentRunning) {
+        await setEnabled(false);
+        showActionFeedback('تم إيقاف الوكيل');
+      } else {
+        await setEnabled(true);
+        showActionFeedback('تم تشغيل الوكيل');
+      }
+    } finally {
+      setAgentToggleLoading(false);
+    }
+  };
+
+  const handleScanSms = async () => {
+    if (scanLoading) return;
+    setScanLoading(true);
+    try {
+      await scanSmsNow();
+      showActionFeedback('اكتمل مسح SMS');
+    } finally {
+      setScanLoading(false);
+    }
+  };
+
+  const handleSync = async () => {
+    if (syncLoading) return;
+    setSyncLoading(true);
+    try {
+      await triggerSync();
+      showActionFeedback('اكتملت المزامنة');
+    } finally {
+      setSyncLoading(false);
+    }
+  };
 
   return (
     <View className="flex-1 bg-background" style={{ paddingTop: insets.top }}>
@@ -172,92 +227,129 @@ export default function HomeScreen() {
           <Text className="text-base font-semibold text-foreground mb-3">إحصائيات الطلبات</Text>
         </View>
         <View className="flex-row flex-wrap gap-3 mb-6">
-          <StatCard
-            icon={Clock}
-            label="نشط"
-            value={state.stats.active}
-            color="#3b82f6"
-            filter="scanning"
-          />
-          <StatCard
-            icon={CircleCheck}
-            label="مؤكد"
-            value={state.stats.confirmed}
-            color="#22c55e"
-            filter="confirmed"
-          />
-          <StatCard
-            icon={CircleX}
-            label="مرفوض"
-            value={state.stats.rejected}
-            color="#ef4444"
-            filter="rejected"
-          />
-          <StatCard
-            icon={MessageSquareWarning}
-            label="مراجعة"
-            value={state.stats.review}
-            color="#f59e0b"
-            filter="review_required"
-          />
-          <StatCard
-            icon={Server}
-            label="إجمالي"
-            value={state.stats.total}
-            color="#6b7280"
-            filter="all"
-          />
-          <StatCard
-            icon={ShieldAlert}
-            label="معلّق"
-            value={state.stats.syncPending}
-            color="#8b5cf6"
-            filter="offline"
-          />
+          <StatCard icon={Clock} label="نشط" value={state.stats.active} color="#3b82f6" filter="scanning" />
+          <StatCard icon={CircleCheck} label="مؤكد" value={state.stats.confirmed} color="#22c55e" filter="confirmed" />
+          <StatCard icon={CircleX} label="مرفوض" value={state.stats.rejected} color="#ef4444" filter="rejected" />
+          <StatCard icon={MessageSquareWarning} label="مراجعة" value={state.stats.review} color="#f59e0b" filter="review_required" />
+          <StatCard icon={Server} label="إجمالي" value={state.stats.total} color="#6b7280" filter="all" />
+          <StatCard icon={ShieldAlert} label="معلّق" value={state.stats.syncPending} color="#8b5cf6" filter="offline" />
         </View>
 
         {/* Service controls */}
-        <View className="mb-6 px-5 py-5 border border-border rounded-2xl bg-card gap-4">
-          <Text className="text-sm font-semibold text-foreground">خدمات الوكيل</Text>
-          <View className="flex-row gap-3">
+        <View className="mb-6 border border-border rounded-2xl bg-card overflow-hidden">
+          {/* رأس القسم مع مؤشر حالة الوكيل */}
+          <View className="px-5 pt-5 pb-4 flex-row items-center justify-between border-b border-border">
+            <View className="gap-0.5">
+              <Text className="text-sm font-semibold text-foreground">خدمات الوكيل</Text>
+              <View className="flex-row items-center gap-1.5 mt-1">
+                {agentRunning ? (
+                  <>
+                    <View className="w-2 h-2 rounded-full bg-green-500" />
+                    <Text className="text-xs text-green-600 font-medium">يعمل الآن</Text>
+                  </>
+                ) : (
+                  <>
+                    <View className="w-2 h-2 rounded-full bg-muted-foreground/40" />
+                    <Text className="text-xs text-muted-foreground">متوقف</Text>
+                  </>
+                )}
+              </View>
+            </View>
+            {agentRunning && (
+              <View className="flex-row items-center gap-1.5 px-3 py-1.5 rounded-full bg-green-50 border border-green-200">
+                <ActivityIndicator size={10} color="#16a34a" />
+                <Text className="text-xs text-green-700 font-medium">مراقبة SMS</Text>
+              </View>
+            )}
+          </View>
+
+          <View className="px-5 py-4 gap-3">
+            {/* الزر الرئيسي: تشغيل / إيقاف */}
             <Pressable
-              onPress={async () => {
-                if (!agentEnabled) {
-                  await setEnabled(true);
-                } else {
-                  await triggerSync();
-                }
-              }}
-              className="flex-1 flex-row items-center justify-center gap-2 py-3 rounded-xl bg-primary active:opacity-70"
+              onPress={handleToggleAgent}
+              disabled={agentToggleLoading}
+              className={`flex-row items-center justify-center gap-2 py-3.5 rounded-xl active:opacity-70 ${
+                agentRunning
+                  ? 'bg-destructive/10 border border-destructive/30'
+                  : 'bg-primary'
+              }`}
             >
-              <Play size={18} color="#ffffff" />
-              <Text className="text-sm font-semibold text-primary-foreground">
-                {agentEnabled ? 'مزامنة الآن' : 'تشغيل الوكيل'}
+              {agentToggleLoading ? (
+                <ActivityIndicator size={18} color={agentRunning ? '#ef4444' : '#ffffff'} />
+              ) : agentRunning ? (
+                <Square size={18} color="#ef4444" />
+              ) : (
+                <Play size={18} color="#ffffff" />
+              )}
+              <Text
+                className={`text-sm font-semibold ${
+                  agentRunning ? 'text-destructive' : 'text-primary-foreground'
+                }`}
+              >
+                {agentToggleLoading
+                  ? agentRunning ? 'جاري الإيقاف...' : 'جاري التشغيل...'
+                  : agentRunning ? 'إيقاف الوكيل' : 'تشغيل الوكيل'}
               </Text>
             </Pressable>
-            <Pressable
-              onPress={scanSmsNow}
-              className="flex-1 flex-row items-center justify-center gap-2 py-3 rounded-xl border border-border active:opacity-70"
-            >
-              <Smartphone size={18} color="#6b7280" />
-              <Text className="text-sm font-semibold text-foreground">مسح SMS</Text>
-            </Pressable>
-          </View>
-          <View className="flex-row gap-3">
-            <Pressable
-              onPress={onRefresh}
-              className="flex-1 flex-row items-center justify-center gap-2 py-3 rounded-xl border border-border active:opacity-70"
-            >
-              <RefreshCw size={18} color="#6b7280" />
-              <Text className="text-sm font-semibold text-muted-foreground">تحديث الحالة</Text>
-            </Pressable>
-            <Pressable
-              onPress={() => router.push('/(app)/diagnostics' as any)}
-              className="flex-1 flex-row items-center justify-center gap-2 py-3 rounded-xl border border-border active:opacity-70"
-            >
-              <Activity size={18} color="#6b7280" />
-              <Text className="text-sm font-semibold text-muted-foreground">تشخيص مفصّل</Text>
-            </Pressable>
+
+            {/* صف الأزرار الثانوية */}
+            <View className="flex-row gap-3">
+              <Pressable
+                onPress={handleScanSms}
+                disabled={scanLoading}
+                className="flex-1 flex-row items-center justify-center gap-2 py-3 rounded-xl border border-border active:opacity-70"
+              >
+                {scanLoading ? (
+                  <ActivityIndicator size={16} color="#6b7280" />
+                ) : (
+                  <Smartphone size={16} color="#6b7280" />
+                )}
+                <Text className="text-sm font-medium text-foreground">
+                  {scanLoading ? 'جاري المسح...' : 'مسح SMS'}
+                </Text>
+              </Pressable>
+
+              <Pressable
+                onPress={handleSync}
+                disabled={syncLoading}
+                className="flex-1 flex-row items-center justify-center gap-2 py-3 rounded-xl border border-border active:opacity-70"
+              >
+                {syncLoading ? (
+                  <ActivityIndicator size={16} color="#6b7280" />
+                ) : (
+                  <RefreshCw size={16} color="#6b7280" />
+                )}
+                <Text className="text-sm font-medium text-foreground">
+                  {syncLoading ? 'جاري المزامنة...' : 'مزامنة'}
+                </Text>
+              </Pressable>
+            </View>
+
+            {/* صف تحديث الحالة والتشخيص */}
+            <View className="flex-row gap-3">
+              <Pressable
+                onPress={onRefresh}
+                className="flex-1 flex-row items-center justify-center gap-2 py-3 rounded-xl border border-border active:opacity-70"
+              >
+                <RefreshCw size={16} color="#6b7280" />
+                <Text className="text-sm font-medium text-muted-foreground">تحديث الحالة</Text>
+              </Pressable>
+              <Pressable
+                onPress={() => router.push('/(app)/diagnostics' as any)}
+                className="flex-1 flex-row items-center justify-center gap-2 py-3 rounded-xl border border-border active:opacity-70"
+              >
+                <Activity size={16} color="#6b7280" />
+                <Text className="text-sm font-medium text-muted-foreground">تشخيص مفصّل</Text>
+              </Pressable>
+            </View>
+
+            {/* إشعار الفعل اللحظي */}
+            {lastAction && (
+              <View className="flex-row items-center gap-2 px-3 py-2.5 rounded-xl bg-green-50 border border-green-200">
+                <CheckCircle2 size={15} color="#16a34a" />
+                <Text className="text-xs text-green-700 font-medium">{lastAction}</Text>
+              </View>
+            )}
           </View>
         </View>
 

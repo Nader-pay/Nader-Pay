@@ -852,7 +852,17 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
     const next = { ...settings, enabled };
     setSettings(next);
     await saveSettings(next);
-  }, [settings]);
+    // تحديث agentRunning في الحالة فورًا بدون انتظار دورة diagnostics القادمة
+    const deviceRegistered = Boolean(deviceState.deviceId && deviceState.deviceToken);
+    const online = await checkOnline();
+    const agentRunning = enabled && deviceRegistered && online && Boolean(next.activeServerProfileId);
+    setState((s) => ({
+      ...s,
+      diagnostics: { ...s.diagnostics, agentRunning },
+    }));
+    // ثم نحدث تشخيصات كاملة في الخلفية
+    await runDiagnostics();
+  }, [settings, deviceState, checkOnline, runDiagnostics]);
 
   const saveAgentSettings = useCallback(async (next: AgentSettings) => {
     setSettings(next);
