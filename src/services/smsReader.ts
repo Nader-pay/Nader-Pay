@@ -1,4 +1,5 @@
 /* eslint-disable no-undef */
+import { PermissionsAndroid } from 'react-native';
 import type { SmsMessage } from '@/types/agent';
 import { detectProvider } from './providers';
 
@@ -10,11 +11,30 @@ const IS_ANDROID = process.env.EXPO_OS === 'android';
 export async function requestSmsPermission(): Promise<boolean> {
   if (process.env.EXPO_OS === 'web') return false;
 
-  // expo-sms-listener يتولى طلب الأذونات عبر plugin
+  // أولاً: جرّب expo-sms-listener
   const listener = await getSmsListenerModule();
   if (listener?.requestSmsPermissionAsync) {
-    const status = await listener.requestSmsPermissionAsync();
-    return status === 'granted';
+    try {
+      const status = await listener.requestSmsPermissionAsync();
+      if (status === 'granted') return true;
+    } catch {
+      // fallback إلى PermissionsAndroid
+    }
+  }
+
+  // ثانياً: fallback مباشر لـ PermissionsAndroid (Android فقط)
+  if (IS_ANDROID) {
+    try {
+      const results = await PermissionsAndroid.requestMultiple([
+        PermissionsAndroid.PERMISSIONS.READ_SMS,
+        PermissionsAndroid.PERMISSIONS.RECEIVE_SMS,
+      ]);
+      return (
+        results[PermissionsAndroid.PERMISSIONS.READ_SMS] === PermissionsAndroid.RESULTS.GRANTED
+      );
+    } catch {
+      return false;
+    }
   }
   return false;
 }
@@ -22,10 +42,24 @@ export async function requestSmsPermission(): Promise<boolean> {
 export async function checkSmsPermission(): Promise<boolean> {
   if (process.env.EXPO_OS === 'web') return false;
 
+  // أولاً: expo-sms-listener
   const listener = await getSmsListenerModule();
   if (listener?.checkSmsPermissionAsync) {
-    const status = await listener.checkSmsPermissionAsync();
-    return status === 'granted';
+    try {
+      const status = await listener.checkSmsPermissionAsync();
+      if (status === 'granted') return true;
+    } catch {
+      // fallback
+    }
+  }
+
+  // ثانياً: PermissionsAndroid.check
+  if (IS_ANDROID) {
+    try {
+      return await PermissionsAndroid.check(PermissionsAndroid.PERMISSIONS.READ_SMS);
+    } catch {
+      return false;
+    }
   }
   return false;
 }
