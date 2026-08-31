@@ -34,16 +34,20 @@ let statusCallback: ((status: RealtimeStatus) => void) | null = null;
 let syncCallback: (() => void) | null = null;
 let isStopped = true;
 let retryAttempt = 0;
-const POLL_INTERVAL_MS = 15000;
-const MAX_RETRIES = 8;
+// Polling كـ fallback فقط — بفاصل مناسب لا يستهلك البطارية
+const POLL_INTERVAL_MS = 30_000;   // 30 ثانية — بدل 15s عدوانية
+const POLL_FALLBACK_INTERVAL_MS = 60_000; // دقيقة كاملة بعد MAX_RETRIES
+const MAX_RETRIES = 5;             // 5 محاولات ثم polling
 
 export function getRealtimeStatus(): RealtimeStatus {
   return currentStatus;
 }
 
 function setStatus(status: RealtimeStatus) {
-  currentStatus = status;
-  statusCallback?.(status);
+  if (currentStatus !== status) {
+    currentStatus = status;
+    statusCallback?.(status);
+  }
 }
 
 function reconnectDelay(): number {
@@ -52,20 +56,22 @@ function reconnectDelay(): number {
 }
 
 async function poll() {
+  if (isStopped) return;
   try {
-    setStatus('polling');
     await runSyncEngine(await loadDeviceState());
     syncCallback?.();
   } catch {
-    // ignore
+    // تجاهل أخطاء polling — لا نغيّر الـ status
   }
 }
 
-function startPolling() {
+function startPolling(interval = POLL_INTERVAL_MS) {
   if (pollTimer) return;
+  // polling هو fallback فقط — نُخبر statusCallback بـ 'polling' لا 'connected'
   setStatus('polling');
-  poll();
-  pollTimer = setInterval(poll, POLL_INTERVAL_MS);
+  // تأخير بسيط قبل أول poll
+  setTimeout(() => { if (!isStopped) poll(); }, 2000);
+  pollTimer = setInterval(() => { if (!isStopped) poll(); }, interval);
 }
 
 function stopPolling() {
@@ -92,7 +98,8 @@ async function subscribeToRealtime() {
 
   const profile = await getActiveServerProfile();
   if (!isSupabaseProfile(profile)) {
-    startPolling();
+    // خادم غير Supabase — polling كـ fallback
+    startPolling(POLL_FALLBACK_INTERVAL_MS);
     return;
   }
 
@@ -102,7 +109,7 @@ async function subscribeToRealtime() {
     try {
       await supabase.removeChannel(currentChannel);
     } catch {
-      // ignore
+      // تجاهل
     }
     currentChannel = null;
   }
@@ -110,9 +117,23 @@ async function subscribeToRealtime() {
   const ds = await loadDeviceState();
   const deviceId = ds.deviceId;
   if (!deviceId) {
-    startPolling();
+    // جهاز غير مسجل — polling كـ fallback
+    startPolling(POLL_FALLBACK_INTERVAL_MS);
     return;
   }
+
+  // تمرير user JWT لـ Supabase Realtime (auth) عبر setAuth بدلاً من channel params
+  try {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (session?.access_token) {
+      // @ts-ignore — setAuth موجودة في realtime-js لكن قد لا تُعرّف في typings القديمة
+      supabase.realtime?.setAuth(session.access_token);
+    }
+  } catch {
+    // نكمل بدون JWT إذا فشل
+  }
+
+  setStatus('disconnected'); // حالة انتقالية قبل SUBSCRIBED
 
   currentChannel = supabase
     .channel('agent-orders')
@@ -125,11 +146,12 @@ async function subscribeToRealtime() {
         filter: `device_id=eq.${deviceId}`,
       },
       async () => {
+        if (isStopped) return;
         try {
           await runSyncEngine(await loadDeviceState());
           syncCallback?.();
         } catch {
-          // ignore
+          // تجاهل
         }
       }
     )
@@ -138,29 +160,26 @@ async function subscribeToRealtime() {
       if (status === 'SUBSCRIBED') {
         retryAttempt = 0;
         setStatus('connected');
-        // Trigger a sync immediately after connecting to catch any missed events.
-        poll().catch(() => undefined);
+        // مزامنة فورية بعد الاتصال لاستدراك أي events فاتت
+        setTimeout(() => { if (!isStopped) poll().catch(() => undefined); }, 500);
       } else if (status === 'CLOSED' || status === 'CHANNEL_ERROR') {
         setStatus('error');
         if (currentChannel) {
-          try {
-            supabase.removeChannel(currentChannel);
-          } catch {
-            // ignore
-          }
+          try { supabase.removeChannel(currentChannel); } catch { /* تجاهل */ }
           currentChannel = null;
         }
         if (retryAttempt < MAX_RETRIES) {
           scheduleReconnect();
         } else {
-          startPolling();
+          // استنفذنا المحاولات — polling بفاصل مناسب كـ fallback
+          startPolling(POLL_FALLBACK_INTERVAL_MS);
         }
       } else if (err) {
         setStatus('error');
         if (retryAttempt < MAX_RETRIES) {
           scheduleReconnect();
         } else {
-          startPolling();
+          startPolling(POLL_FALLBACK_INTERVAL_MS);
         }
       }
     });
@@ -188,13 +207,26 @@ export async function stopRealtimeSync(): Promise<void> {
     try {
       await supabase.removeChannel(currentChannel);
     } catch {
-      // ignore
+      // تجاهل
     }
     currentChannel = null;
   }
   currentStatus = 'disconnected';
   statusCallback = null;
   syncCallback = null;
+}
+
+/** إعادة الاتصال بعد network reconnect أو رجوع التطبيق للواجهة */
+export async function reconnectRealtime(): Promise<void> {
+  if (isStopped) return;
+  // إيقاف الـ polling المؤقت وإعادة محاولة الـ realtime
+  stopPolling();
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer as unknown as number);
+    reconnectTimer = null;
+  }
+  retryAttempt = 0;
+  await subscribeToRealtime();
 }
 
 export function triggerRealtimePoll(): Promise<void> {

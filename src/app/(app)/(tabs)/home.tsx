@@ -404,21 +404,34 @@ function SmartSummary({
   const verified = diagnostics.verifiedProviderSources ?? 0;
   const active = stats.active ?? 0;
   const pendingSync = stats.syncPending ?? 0;
-  const backend = diagnostics.backendStatus === 'online';
+  const backend = diagnostics.backendStatus === 'online' || diagnostics.backendStatus === 'path_restricted';
   const sms = diagnostics.smsReady;
   const notifications = diagnostics.notifications;
+  const rt = diagnostics.runtimeStatus ?? 'DISABLED';
+  const isRunning = rt === 'RUNNING' || rt === 'DEGRADED';
 
+  // ✅ agentRunning يُقرأ من runtimeStatus الحقيقي — ليس من backendStatus
+  // ✅ verified=0 هو تحذير فقط وليس فشل runtime
   let overall: 'ready' | 'attention' | 'stopped' = 'stopped';
   let summary = 'الوكيل متوقف — يرجى ضبط الخادم والتسجيل';
   let color = '#ef4444';
 
-  if (isReady) {
+  if (!isReady) {
+    summary = 'يرجى إعداد خادم نشط وتسجيل الجهاز أولاً';
+    color = '#ef4444';
+  } else if (isRunning) {
     if (backend && sms) {
       overall = 'ready';
       color = '#22c55e';
-      summary = `الوكيل يعمل بشكل طبيعي — ${verified} مزود موثق — ${active} طلب نشط`;
+      const rtLabel = rt === 'DEGRADED' ? ' (وضع Polling)' : '';
+      summary = `الوكيل يعمل${rtLabel} — ${active} طلب نشط`;
+      if (verified === 0) {
+        summary += ' — لا يوجد مصدر موثق بعد';
+        color = '#f59e0b';
+        overall = 'attention';
+      }
       if (pendingSync > 0) {
-        summary += ` — ${pendingSync} عملية بانتظار المزامنة`;
+        summary += ` — ${pendingSync} بانتظار المزامنة`;
       }
     } else {
       overall = 'attention';
@@ -427,8 +440,24 @@ function SmartSummary({
       if (!backend) issues.push('الخادم غير متصل');
       if (!sms) issues.push('صلاحية SMS غير ممنوحة');
       if (!notifications) issues.push('الإشعارات غير مفعلة');
-      summary = `تحذير: ${issues.join(' — ')}`;
+      summary = `الوكيل يعمل لكن: ${issues.join(' — ')}`;
     }
+  } else if (rt === 'RECONNECTING' || rt === 'STARTING') {
+    overall = 'attention';
+    color = '#f59e0b';
+    summary = rt === 'STARTING' ? 'جاري تشغيل الوكيل...' : 'يحاول إعادة الاتصال...';
+  } else if (rt === 'OFFLINE') {
+    overall = 'stopped';
+    color = '#f59e0b';
+    summary = 'لا يوجد اتصال — سيستأنف تلقائياً عند العودة';
+  } else if (rt === 'ERROR') {
+    overall = 'stopped';
+    color = '#ef4444';
+    summary = `خطأ: ${diagnostics.runtimeReason ?? 'تحقق من إعدادات الخادم'}`;
+  } else {
+    // DISABLED
+    summary = 'الوكيل معطل — اضغط "تشغيل الوكيل" للبدء';
+    color = '#9ca3af';
   }
 
   return (
@@ -447,6 +476,7 @@ function SmartSummary({
           <View className="w-2 h-2 rounded-full" style={{ backgroundColor: sms ? '#22c55e' : '#ef4444' }} />
           <Text className="text-xs text-muted-foreground">SMS</Text>
         </View>
+        {/* ✅ verified=0 → orange (warning) وليس أحمر (error) */}
         <View className="flex-row items-center gap-1">
           <View className="w-2 h-2 rounded-full" style={{ backgroundColor: verified > 0 ? '#22c55e' : '#f59e0b' }} />
           <Text className="text-xs text-muted-foreground">{verified} مصدر موثق</Text>

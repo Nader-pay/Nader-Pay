@@ -215,9 +215,17 @@ export const dbReady = SQLite.openDatabaseAsync(DB_NAME, DB_OPTIONS)
       throw new Error(`Schema setup failed: missing tables: ${missing.join(', ')}`);
     }
 
-  // Migration: add columns introduced after the original table was created
-  const columns = await db.getAllAsync<{ name: string }>("PRAGMA table_info('orders_cache')");
-  const columnNames = new Set(columns.map((c) => c.name));
+  // Migration: add updated_at column to orders_cache if missing on devices with old schema
+  const orderCacheColumns = await db.getAllAsync<{ name: string; notnull: number; dflt_value: string | null }>(
+    "PRAGMA table_info('orders_cache')"
+  );
+  const orderCacheColMap = new Map(orderCacheColumns.map((c) => [c.name, c]));
+  if (!orderCacheColMap.has('updated_at')) {
+    // جدول قديم جداً بدون updated_at — نضيفه مع قيمة افتراضية
+    await db.execAsync("ALTER TABLE orders_cache ADD COLUMN updated_at TEXT NOT NULL DEFAULT (datetime('now'))");
+  }
+  // orders_cache: باقي columns (المُضافة في نسخ لاحقة)
+  const columnNames = new Set(orderCacheColMap.keys());
   if (!columnNames.has('sync_status')) {
     await db.execAsync("ALTER TABLE orders_cache ADD COLUMN sync_status TEXT DEFAULT 'synced'");
   }
@@ -695,7 +703,7 @@ export async function cacheOrders(orders: {
           o.status,
           o.expires_at ?? null,
           o.created_at,
-          o.updated_at,
+          o.updated_at ?? new Date().toISOString(),
           o.local_status ?? null,
           o.match_score ?? null,
           o.evidence_id ?? null,
@@ -845,6 +853,8 @@ export async function updateOrderLocal(
   if (updates.reviewedAt !== undefined) { fields.push('reviewed_at = ?'); values.push(updates.reviewedAt); }
   if (updates.reviewReason !== undefined) { fields.push('review_reason = ?'); values.push(updates.reviewReason); }
   if (fields.length === 0) return;
+  // دائماً نُحدّث updated_at عند أي تعديل محلي
+  fields.push("updated_at = datetime('now')");
   values.push(orderId);
   await db.runAsync(`UPDATE orders_cache SET ${fields.join(', ')} WHERE id = ?`, values);
 }

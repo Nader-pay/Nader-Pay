@@ -18,7 +18,19 @@ import { findBestMatch } from '@/services/matchingEngine';
 import { readExistingPaymentMessages, incrementalScan } from '@/services/smsReader';
 import { indexSmsMessage, findMatchingSmsInIndex, getLastIndexedSmsAt } from '@/services/localSmsIndex';
 import { runSyncEngine } from '@/services/syncEngine';
-import { startRealtimeSync, stopRealtimeSync } from '@/services/realtimeSync';
+import {
+  startRealtimeSync,
+  stopRealtimeSync,
+  reconnectRealtime,
+  triggerRealtimePoll,
+} from '@/services/realtimeSync';
+import {
+  startRuntime,
+  stopRuntime,
+  resumeRuntime,
+  notifyNetworkChange,
+  getRuntimeSnapshot,
+} from '@/services/agentRuntime';
 import { verifyMessageSource } from '@/services/sourceVerification';
 import { registerBackgroundSync, unregisterBackgroundSync } from '@/services/backgroundAgent';
 import { getPermissionSnapshot, requestSmsPermission } from '@/services/permissionManager';
@@ -684,11 +696,34 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
     }
     setState((s) => ({ ...s, isPolling: true, lastError: null }));
     try {
-      const { registerDevice } = await import('@/services/deviceRegistration');
-      const result = await registerDevice();
+      const { registerDevice: doRegister } = await import('@/services/deviceRegistration');
+      const result = await doRegister();
+
+      if (result.alreadyRegistered) {
+        // الجهاز كان مسجلاً — تأكد أن state محدّث
+        if (result.deviceId && result.deviceToken) {
+          const existing: DeviceState = {
+            deviceId: result.deviceId,
+            deviceToken: result.deviceToken,
+            deviceName: deviceState.deviceName ?? 'NaderPay Agent',
+            registeredAt: deviceState.registeredAt ?? new Date().toISOString(),
+            accountId: deviceState.accountId ?? null,
+          };
+          setDeviceState(existing);
+          await saveDeviceState(existing);
+        }
+        await logEvent('device_already_registered', 'الجهاز مسجل مسبقاً', { deviceId: result.deviceId });
+        setState((s) => ({ ...s, isPolling: false }));
+        return;
+      }
+
       if (!result.success) {
+        // فشل Backend حقيقي — نعرضه للمستخدم
         throw new Error(result.error || 'فشل التسجيل');
       }
+
+      // نجح Backend — نحفظ في DB المحلية
+      // خطأ DB هنا مستقل: نُسجّله لكن لا يُعتبر فشل backend
       const newState: DeviceState = {
         deviceId: result.deviceId ?? null,
         deviceToken: result.deviceToken ?? null,
@@ -696,11 +731,20 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
         registeredAt: new Date().toISOString(),
         accountId: null,
       };
-      setDeviceState(newState);
-      await saveDeviceState(newState);
-      await logEvent('device_registered', 'تم تسجيل الجهاز بنجاح', { deviceId: result.deviceId });
+
+      try {
+        setDeviceState(newState);
+        await saveDeviceState(newState);
+        await logEvent('device_registered', 'تم تسجيل الجهاز بنجاح', { deviceId: result.deviceId });
+      } catch (dbErr) {
+        // خطأ DB محلي — نُسجّله كـ warning ولا نُظهره كفشل backend
+        await logEvent('device_register_db_warn', dbErr instanceof Error ? dbErr.message : 'خطأ في حفظ بيانات الجهاز محلياً');
+        // state في الذاكرة محدّث — المستخدم لن يرى الخطأ
+      }
+
       await emitNotification('Nader Pay', 'تم تسجيل الجهاز بنجاح');
     } catch (err) {
+      // فشل حقيقي (Backend أو network) — نعرضه
       setState((s) => ({
         ...s,
         lastError: err instanceof Error ? err.message : 'فشل تسجيل الجهاز',
@@ -709,7 +753,7 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
     } finally {
       setState((s) => ({ ...s, isPolling: false }));
     }
-  }, [hasActiveProfile, emitNotification]);
+  }, [hasActiveProfile, deviceState, emitNotification]);
 
   const confirmOrder = useCallback(async (orderId: string, reviewedBy?: string, reason?: string) => {
     if (orderLocks.current.has(orderId)) return { ok: false, error: 'الطلب قيد المعالجة' };
@@ -852,10 +896,53 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
     const next = { ...settings, enabled };
     setSettings(next);
     await saveSettings(next);
-    // لا نضبط agentRunning مباشرة — ندع runDiagnostics تحسبها من الحالة الحقيقية
-    // (backendStatus يجب أن يكون online أو path_restricted + device مسجل)
+
+    if (enabled) {
+      // بدء runtime حقيقي بعد تفعيل الوكيل
+      const online = await checkOnline();
+      const registered = Boolean(deviceState.deviceId && deviceState.deviceToken);
+      await startRuntime({
+        enabled: true,
+        deviceRegistered: registered,
+        online,
+        tick: async () => {
+          try {
+            await runSyncEngine(deviceState);
+            const rt = stateRef.current.diagnostics.realtimeStatus ?? 'unknown';
+            return { ok: true, realtimeStatus: rt };
+          } catch (err) {
+            return { ok: false, error: err instanceof Error ? err.message : 'tick_error' };
+          }
+        },
+        onStatusChange: (snapshot) => {
+          setState((s) => ({
+            ...s,
+            diagnostics: {
+              ...s.diagnostics,
+              runtimeStatus: snapshot.status,
+              runtimeReason: snapshot.reason,
+              // agentRunning يُحسب من runtime حقيقي: RUNNING أو DEGRADED
+              agentRunning: snapshot.isProcessing,
+            },
+          }));
+        },
+      });
+    } else {
+      stopRuntime();
+      setState((s) => ({
+        ...s,
+        diagnostics: {
+          ...s.diagnostics,
+          runtimeStatus: 'DISABLED',
+          runtimeReason: null,
+          agentRunning: false,
+        },
+      }));
+    }
+
+    // تحديث diagnostics لتعكس الحالة الحقيقية
     await runDiagnostics();
-  }, [settings, runDiagnostics]);
+  }, [settings, deviceState, checkOnline, stateRef, runDiagnostics]);
 
   const saveAgentSettings = useCallback(async (next: AgentSettings) => {
     setSettings(next);
@@ -983,14 +1070,31 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
 
   // مراقبة حالة التطبيق والشبكة
   useEffect(() => {
-    const subscription = AppState.addEventListener('change', (nextState) => {
+    const subscription = AppState.addEventListener('change', async (nextState) => {
+      const wasActive = appActive.current;
       appActive.current = nextState === 'active';
+
+      // عند رجوع التطبيق للواجهة بعد الخلفية
+      if (!wasActive && nextState === 'active' && settings.enabled && deviceState.deviceId) {
+        const online = await checkOnline();
+        // استئناف Realtime إذا كان enabled
+        if (online) {
+          reconnectRealtime().catch(() => undefined);
+        }
+        // إخبار Runtime بالتغيير
+        resumeRuntime(online).catch(() => undefined);
+        // تحديث diagnostics
+        runDiagnostics().catch(() => undefined);
+      }
     });
+
+    // مراقبة دورية للشبكة كـ fallback (كل 10 ثوانٍ — بدلاً من 5s السابقة)
     networkTimer.current = setInterval(() => {
       monitorNetwork();
-    }, 5000);
+    }, 10_000);
 
-    const networkSubscription = Network.addNetworkStateListener((event) => {
+    // Network listener: event-driven (فوري) + يُعلم Runtime
+    const networkSubscription = Network.addNetworkStateListener(async (event) => {
       const isConnected = Boolean(event.isConnected);
       setState((s) => ({
         ...s,
@@ -999,6 +1103,11 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
           network: isConnected ? 'ONLINE' : 'OFFLINE',
         },
       }));
+      // إعلام Runtime وRealtime بتغيير الشبكة
+      await notifyNetworkChange(isConnected);
+      if (isConnected && settings.enabled && deviceState.deviceId) {
+        reconnectRealtime().catch(() => undefined);
+      }
     });
 
     return () => {
@@ -1009,7 +1118,7 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
         networkTimer.current = null;
       }
     };
-  }, [monitorNetwork]);
+  }, [monitorNetwork, settings.enabled, deviceState.deviceId, checkOnline, runDiagnostics]);
 
   // إعادة مزامنة تلقائية عند الانتقال من Offline إلى Online
   useEffect(() => {
@@ -1045,6 +1154,9 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
       (status) => {
         setState((s) => ({
           ...s,
+          // isPolling = true فقط إذا كان realtime فعلاً يعمل (connected أو محاولة)
+          // polling = fallback وليس "connected"
+          isPolling: status === 'connected' || status === 'disconnected',
           diagnostics: { ...s.diagnostics, realtimeStatus: status },
         }));
       },

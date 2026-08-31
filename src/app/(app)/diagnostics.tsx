@@ -100,10 +100,36 @@ export default function DiagnosticsScreen() {
       key: 'agent',
       icon: Activity,
       label: 'حالة الوكيل',
-      value: d.agentRunning ? 'يعمل' : 'متوقف',
-      state: d.agentRunning ? 'ok' : 'error',
-      reason: 'يتحكم في جلب الطلبات ومطابقة SMS.',
-      solution: d.agentRunning ? 'الوكيل يعمل بشكل طبيعي.' : 'انتقل إلى الإعدادات وفعّل الوكيل.',
+      value: (() => {
+        const rt = d.runtimeStatus;
+        if (!rt || rt === 'DISABLED') return 'معطل';
+        if (rt === 'RUNNING') return 'يعمل';
+        if (rt === 'DEGRADED') return 'يعمل (مخفض)';
+        if (rt === 'STARTING') return 'جاري التشغيل';
+        if (rt === 'RECONNECTING') return 'إعادة اتصال';
+        if (rt === 'OFFLINE') return 'غير متصل';
+        if (rt === 'ERROR') return 'خطأ';
+        return d.agentRunning ? 'يعمل' : 'متوقف';
+      })(),
+      state: (() => {
+        const rt = d.runtimeStatus;
+        if (rt === 'RUNNING') return 'ok';
+        if (rt === 'DEGRADED' || rt === 'RECONNECTING' || rt === 'STARTING') return 'warning';
+        if (rt === 'ERROR' || rt === 'DISABLED') return 'error';
+        if (rt === 'OFFLINE') return 'warning';
+        return d.agentRunning ? 'ok' : 'error';
+      })() as DiagnosticState,
+      reason: d.runtimeReason ?? 'يتحكم في جلب الطلبات ومطابقة SMS.',
+      solution: (() => {
+        const rt = d.runtimeStatus;
+        if (rt === 'RUNNING') return 'الوكيل يعمل بشكل طبيعي.';
+        if (rt === 'DEGRADED') return 'يعمل بـ Polling — Realtime غير متصل. هذا طبيعي إذا انقطع الاتصال.';
+        if (rt === 'RECONNECTING') return 'يحاول إعادة الاتصال تلقائياً...';
+        if (rt === 'OFFLINE') return 'لا يوجد اتصال. سيستأنف تلقائياً عند العودة.';
+        if (rt === 'ERROR') return `خطأ: ${d.runtimeReason ?? 'غير محدد'} — تحقق من Backend وإعدادات الخادم.`;
+        if (rt === 'DISABLED') return 'انتقل إلى الشاشة الرئيسية وفعّل الوكيل.';
+        return d.agentRunning ? 'الوكيل يعمل.' : 'انتقل إلى الإعدادات وفعّل الوكيل.';
+      })(),
     },
     {
       key: 'network',
@@ -173,9 +199,12 @@ export default function DiagnosticsScreen() {
       icon: ShieldCheck,
       label: 'مصادر الدفع الموثقة',
       value: String(d.verifiedProviderSources ?? 0),
-      state: (d.verifiedProviderSources ?? 0) > 0 ? 'ok' : 'error',
-      reason: 'لا تُعالج رسائل SMS إلا من مصادر موثقة.',
-      solution: (d.verifiedProviderSources ?? 0) > 0 ? 'يوجد مصدر موثق.' : 'انتقل إلى مصادر الدفع وتوثق مصدر SMS.',
+      // ✅ مصادر الدفع = 0 هي تنبيه (warning) وليست خطأ يمنع تشغيل الوكيل
+      state: (d.verifiedProviderSources ?? 0) > 0 ? 'ok' : 'warning',
+      reason: 'رسائل SMS من مصادر غير موثقة لن تُعالج.',
+      solution: (d.verifiedProviderSources ?? 0) > 0
+        ? `${d.verifiedProviderSources} مصدر موثق — الوكيل يعمل بشكل طبيعي.`
+        : 'انتقل إلى مصادر الدفع وتوثق مصدر SMS. الوكيل يعمل لكن لن يعالج رسائل حتى يوجد مصدر موثق.',
     },
   ];
 
@@ -184,19 +213,52 @@ export default function DiagnosticsScreen() {
       key: 'backend',
       icon: Globe,
       label: 'Backend',
-      value: d.backendStatus === 'online' ? 'Online' : d.backendStatus ?? 'Unknown',
-      state: d.backendStatus === 'online' ? 'ok' : d.backendStatus === 'error' ? 'error' : 'warning',
+      value: (() => {
+        switch (d.backendStatus) {
+          case 'online': return 'Online ✓';
+          case 'path_restricted': return 'متصل (مقيد)';
+          case 'offline': return 'Offline';
+          case 'unauthorized': return 'غير مصرح (401)';
+          case 'forbidden': return 'محظور (403)';
+          case 'timeout': return 'Timeout';
+          case 'server_error': return 'خطأ خادم (5xx)';
+          case 'invalid_config': return 'إعداد خاطئ (400)';
+          case 'error': return 'خطأ';
+          default: return d.backendStatus ?? 'Unknown';
+        }
+      })(),
+      state: (d.backendStatus === 'online' || d.backendStatus === 'path_restricted') ? 'ok'
+        : (d.backendStatus === 'offline' || d.backendStatus === 'error' || d.backendStatus === 'server_error') ? 'error'
+        : 'warning',
       reason: 'الاتصال بالخادم المُعدّ ضروري للحصول على الطلبات وإرسال التأكيد.',
-      solution: d.backendStatus === 'online' ? 'الخادم متاح.' : 'تحقق من عنوان URL والشهادات والبيانات في إعدادات الخادم.',
+      solution: (d.backendStatus === 'online' || d.backendStatus === 'path_restricted')
+        ? 'الخادم متاح.'
+        : 'تحقق من عنوان URL والشهادات والبيانات في إعدادات الخادم.',
     },
     {
       key: 'realtime',
       icon: Radio,
-      label: 'Realtime',
-      value: d.realtimeStatus === 'connected' ? 'متصل' : d.realtimeStatus ?? '—',
-      state: d.realtimeStatus === 'connected' ? 'ok' : d.realtimeStatus === 'error' ? 'error' : 'warning',
-      reason: 'يحدد كيفية استلام الطلبات الجديدة.',
-      solution: d.realtimeStatus === 'connected' ? 'القناة الحية متصلة.' : 'يعمل الاستطلاع الاحتياطي؛ يمكنك إعداده من إعدادات الخادم.',
+      label: 'Realtime / Sync',
+      // ✅ polling ≠ connected — نعرضهما بشكل مختلف
+      value: (() => {
+        switch (d.realtimeStatus) {
+          case 'connected': return 'Realtime متصل ✓';
+          case 'polling': return 'Polling (Fallback)';
+          case 'disconnected': return 'غير متصل';
+          case 'error': return 'خطأ في الاتصال';
+          default: return d.realtimeStatus ?? '—';
+        }
+      })(),
+      state: d.realtimeStatus === 'connected' ? 'ok'
+        : d.realtimeStatus === 'polling' ? 'warning'
+        : d.realtimeStatus === 'error' ? 'error'
+        : 'warning',
+      reason: 'Realtime = استقبال فوري للطلبات. Polling = احتياطي كل 60 ث.',
+      solution: d.realtimeStatus === 'connected'
+        ? 'القناة الحية متصلة — الأداء الأمثل.'
+        : d.realtimeStatus === 'polling'
+        ? 'يعمل بـ Polling الاحتياطي — سيحاول Realtime تلقائياً.'
+        : 'تحقق من إعداد Supabase وتسجيل الجهاز.',
     },
   ];
 

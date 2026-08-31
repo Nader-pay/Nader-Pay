@@ -149,6 +149,9 @@ export type AgentDiagnosticState = {
   lastBackendError?: string | null;
   realtimeStatus?: 'connected' | 'polling' | 'disconnected' | 'error' | 'unavailable' | 'unknown';
   verifiedProviderSources?: number;
+  /** حالة Runtime الموحدة — مستقلة عن backendStatus و realtimeStatus */
+  runtimeStatus?: 'DISABLED' | 'STARTING' | 'RUNNING' | 'DEGRADED' | 'RECONNECTING' | 'ERROR' | 'OFFLINE';
+  runtimeReason?: string | null;
 };
 
 export type AgentState = {

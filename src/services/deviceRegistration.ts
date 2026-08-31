@@ -5,6 +5,8 @@ import {
   sendHeartbeat as sendHeartbeatBackend,
   postOrderAction,
 } from '@/services/backendConnector';
+import { loadDeviceState } from '@/services/agentSettings';
+import { logEvent } from '@/lib/database';
 import type { DeviceState } from '@/types/agent';
 
 export type RegisterDeviceResult = {
@@ -12,28 +14,56 @@ export type RegisterDeviceResult = {
   deviceId?: string;
   deviceToken?: string;
   error?: string;
+  /** هل الجهاز كان مسجلاً مسبقاً (idempotent re-register) */
+  alreadyRegistered?: boolean;
 };
 
 export async function registerDevice(): Promise<RegisterDeviceResult> {
+  // 1. تحقق idempotent — إذا كان الجهاز مسجلاً مسبقاً لا نُعيد التسجيل
+  try {
+    const existingState = await loadDeviceState();
+    if (existingState.deviceId && existingState.deviceToken) {
+      await logEvent('device_register_skip', 'الجهاز مسجل مسبقاً — تم تخطي إعادة التسجيل', {
+        deviceId: existingState.deviceId,
+      });
+      return {
+        success: true,
+        deviceId: existingState.deviceId,
+        deviceToken: existingState.deviceToken,
+        alreadyRegistered: true,
+      };
+    }
+  } catch (err) {
+    // خطأ في قراءة الحالة المحلية لا يمنع التسجيل
+    await logEvent('device_register_state_read_warn', err instanceof Error ? err.message : 'unknown');
+  }
+
+  // 2. تحقق من وجود خادم نشط
   const profile = await getActiveServerProfile();
   if (!profile) {
     return { success: false, error: 'لم يتم تكوين خادم نشط' };
   }
+  await logEvent('device_register_start', 'بدء تسجيل الجهاز', { profileId: profile.id });
 
-  // نحضر user JWT من جلسة Supabase — device-api/register-with-auth يتطلبه
+  // 3. نحضر user JWT من جلسة Supabase — device-api/register-with-auth يتطلبه
   let userJwt: string | null = null;
   try {
     const { supabase } = await import('@/client/supabase');
     const { data: { session } } = await supabase.auth.getSession();
     userJwt = session?.access_token ?? null;
-  } catch { /* نتجاهل أخطاء جلب الجلسة */ }
+    await logEvent('device_register_jwt', userJwt ? 'JWT موجود' : 'لا يوجد JWT - سيتم التسجيل كـ anon');
+  } catch (err) {
+    await logEvent('device_register_jwt_warn', err instanceof Error ? err.message : 'فشل جلب الجلسة');
+  }
 
   const deviceName = [Device.deviceName, Device.brand, Device.modelName]
     .filter(Boolean)
     .join(' - ') || 'NaderPay Agent';
 
+  // 4. التسجيل مع Backend
+  let backendResult: { ok: boolean; deviceId?: string; deviceToken?: string; error?: string };
   try {
-    const result = await registerDeviceWithBackend(profile, {
+    backendResult = await registerDeviceWithBackend(profile, {
       deviceName,
       platform: 'android',
       appVersion: process.env.EXPO_PUBLIC_APP_VERSION ?? '2.0.0',
@@ -41,25 +71,39 @@ export async function registerDevice(): Promise<RegisterDeviceResult> {
       installationId: Device.osBuildFingerprint ?? undefined,
       userJwt: userJwt ?? undefined,
     });
-
-    if (!result.ok) {
-      return { success: false, error: result.error || 'فشل تسجيل الجهاز' };
-    }
-    if (!result.deviceId || !result.deviceToken) {
-      return { success: false, error: 'استجابة غير مكتملة من الخادم' };
-    }
-
-    return {
-      success: true,
-      deviceId: result.deviceId,
-      deviceToken: result.deviceToken,
-    };
   } catch (err) {
-    return {
-      success: false,
-      error: err instanceof Error ? err.message : 'حدث خطأ غير متوقع',
-    };
+    const msg = err instanceof Error ? err.message : 'حدث خطأ غير متوقع';
+    await logEvent('device_register_backend_error', msg);
+    return { success: false, error: msg };
   }
+
+  if (!backendResult.ok) {
+    await logEvent('device_register_backend_fail', backendResult.error || 'فشل غير محدد');
+    return { success: false, error: backendResult.error || 'فشل تسجيل الجهاز' };
+  }
+
+  if (!backendResult.deviceId || !backendResult.deviceToken) {
+    await logEvent('device_register_incomplete', 'استجابة Backend ناقصة');
+    return { success: false, error: 'استجابة غير مكتملة من الخادم' };
+  }
+
+  // 5. Backend نجح — الآن نحفظ في DB المحلية
+  // خطأ DB هنا لا يُعتبر فشل backend — نُعيد النجاح مع تسجيل الخطأ المحلي
+  try {
+    // نحفظ في DB عبر saveDeviceState في AgentContext بعد عودة النتيجة
+    await logEvent('device_register_backend_ok', 'تسجيل Backend ناجح', {
+      deviceId: backendResult.deviceId,
+    });
+  } catch (dbErr) {
+    // خطأ تسجيل log — لا يؤثر على النتيجة
+  }
+
+  return {
+    success: true,
+    deviceId: backendResult.deviceId,
+    deviceToken: backendResult.deviceToken,
+    alreadyRegistered: false,
+  };
 }
 
 export async function sendHeartbeat(
