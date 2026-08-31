@@ -37,6 +37,9 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
       - name: Install Android build-tools (aapt2, apksigner, zipalign)
         run: |
           sdkmanager --install "build-tools;34.0.0"
@@ -86,7 +89,22 @@ jobs:
           cd android
           mkdir -p app/build/outputs/logs
           set -o pipefail
-          ./gradlew --no-daemon assembleRelease 2>&1 | tee app/build/outputs/logs/gradle-build.log
+          SUCCESS=0
+          for ATTEMPT in 1 2 3; do
+            echo "=================================================="
+            echo "Gradle build attempt $ATTEMPT of 3..."
+            echo "=================================================="
+            if ./gradlew --no-daemon assembleRelease 2>&1 | tee app/build/outputs/logs/gradle-build.log; then
+              SUCCESS=1
+              break
+            fi
+            echo "Attempt $ATTEMPT failed. Waiting 10s before retry..."
+            sleep 10
+          done
+          if [ $SUCCESS -ne 1 ]; then
+            echo "All 3 Gradle build attempts failed."
+            exit 1
+          fi
         env:
           KEYSTORE_PATH: ${{ github.workspace }}/android/keystore/naderpay-release.keystore
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
