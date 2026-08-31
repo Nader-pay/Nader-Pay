@@ -78,6 +78,10 @@ export const dbReady = SQLite.openDatabaseAsync(DB_NAME, DB_OPTIONS)
       payload TEXT NOT NULL,
       attempts INTEGER DEFAULT 0,
       status TEXT DEFAULT 'pending',
+      idempotency_key TEXT,
+      retry_class TEXT DEFAULT 'RETRYABLE',
+      error_code TEXT,
+      next_retry_at TEXT,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
 
@@ -194,14 +198,29 @@ export const dbReady = SQLite.openDatabaseAsync(DB_NAME, DB_OPTIONS)
       recipient_wallet TEXT,
       recipient_account TEXT,
       parsed_payload TEXT,
+      matched_order_id TEXT,
+      match_status TEXT DEFAULT 'unmatched',
       stored_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
+
+    CREATE TABLE IF NOT EXISTS event_deduplication (
+      dedup_key TEXT PRIMARY KEY,
+      event_type TEXT NOT NULL,
+      first_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+      last_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+      occurrence_count INTEGER DEFAULT 1,
+      resolved INTEGER DEFAULT 0
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_dedup_event_type ON event_deduplication(event_type);
+    CREATE INDEX IF NOT EXISTS idx_dedup_resolved ON event_deduplication(resolved);
 
     CREATE INDEX IF NOT EXISTS idx_sms_provider ON local_sms_index(provider);
     CREATE INDEX IF NOT EXISTS idx_sms_transaction ON local_sms_index(transaction_id);
     CREATE INDEX IF NOT EXISTS idx_sms_amount ON local_sms_index(amount);
     CREATE INDEX IF NOT EXISTS idx_sms_sender ON local_sms_index(sender_phone);
     CREATE INDEX IF NOT EXISTS idx_sms_received ON local_sms_index(received_at);
+    CREATE INDEX IF NOT EXISTS idx_sms_match_status ON local_sms_index(match_status);
   `;
     await runSchemaStatements(db, schema);
 
@@ -314,6 +333,66 @@ export const dbReady = SQLite.openDatabaseAsync(DB_NAME, DB_OPTIONS)
   }
   if (!smsColNames.has('parsed_payload')) {
     await db.execAsync('ALTER TABLE local_sms_index ADD COLUMN parsed_payload TEXT');
+  }
+  if (!smsColNames.has('matched_order_id')) {
+    await db.execAsync('ALTER TABLE local_sms_index ADD COLUMN matched_order_id TEXT');
+  }
+  if (!smsColNames.has('match_status')) {
+    await db.execAsync("ALTER TABLE local_sms_index ADD COLUMN match_status TEXT DEFAULT 'unmatched'");
+    await db.execAsync("CREATE INDEX IF NOT EXISTS idx_sms_match_status ON local_sms_index(match_status)");
+  }
+
+  // Migration: add retry/idempotency columns to offline_queue
+  const oqColumns = await db.getAllAsync<{ name: string }>("PRAGMA table_info('offline_queue')");
+  const oqColNames = new Set(oqColumns.map((c) => c.name));
+  if (!oqColNames.has('idempotency_key')) {
+    await db.execAsync('ALTER TABLE offline_queue ADD COLUMN idempotency_key TEXT');
+  }
+  if (!oqColNames.has('retry_class')) {
+    await db.execAsync("ALTER TABLE offline_queue ADD COLUMN retry_class TEXT DEFAULT 'RETRYABLE'");
+  }
+  if (!oqColNames.has('error_code')) {
+    await db.execAsync('ALTER TABLE offline_queue ADD COLUMN error_code TEXT');
+  }
+  if (!oqColNames.has('next_retry_at')) {
+    await db.execAsync('ALTER TABLE offline_queue ADD COLUMN next_retry_at TEXT');
+  }
+  await db.execAsync("CREATE INDEX IF NOT EXISTS idx_offline_queue_next_retry ON offline_queue(next_retry_at)");
+  await db.execAsync("CREATE INDEX IF NOT EXISTS idx_offline_queue_retry_class ON offline_queue(retry_class)");
+
+  // Migration: add timestamp integrity columns to orders_cache
+  const ocCols2 = await db.getAllAsync<{ name: string }>("PRAGMA table_info('orders_cache')");
+  const ocColNames2 = new Set(ocCols2.map((c) => c.name));
+  const tsColumns = [
+    'sms_received_at',
+    'notification_received_at',
+    'first_seen_local_at',
+    'processed_at',
+    'verified_at',
+    'sync_started_at',
+    'synced_at',
+  ];
+  for (const col of tsColumns) {
+    if (!ocColNames2.has(col)) {
+      await db.execAsync(`ALTER TABLE orders_cache ADD COLUMN ${col} TEXT`);
+    }
+  }
+
+  // Migration: create event_deduplication table if not present (schema above already creates it;
+  // this guard is for devices with older schema where CREATE IF NOT EXISTS may have been skipped)
+  const hasDedup = tableNames.has('event_deduplication') ||
+    (await db.getAllAsync<{ name: string }>("SELECT name FROM sqlite_master WHERE type='table' AND name='event_deduplication'")).length > 0;
+  if (!hasDedup) {
+    await db.execAsync(`CREATE TABLE IF NOT EXISTS event_deduplication (
+      dedup_key TEXT PRIMARY KEY,
+      event_type TEXT NOT NULL,
+      first_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+      last_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+      occurrence_count INTEGER DEFAULT 1,
+      resolved INTEGER DEFAULT 0
+    )`);
+    await db.execAsync("CREATE INDEX IF NOT EXISTS idx_dedup_event_type ON event_deduplication(event_type)");
+    await db.execAsync("CREATE INDEX IF NOT EXISTS idx_dedup_resolved ON event_deduplication(resolved)");
   }
 
   // Migration: add missing columns to provider_sources
@@ -890,16 +969,65 @@ export async function getOrderById(orderId: string): Promise<{
   return (await db.getFirstAsync('SELECT * FROM orders_cache WHERE id = ?', [orderId])) as any;
 }
 
+// ====== Retry Classification ======
+
+export type RetryClass =
+  | 'RETRYABLE'
+  | 'NON_RETRYABLE'
+  | 'AUTH_REQUIRED'
+  | 'DUPLICATE'
+  | 'REVIEW_REQUIRED'
+  | 'PERMANENT_FAILURE';
+
+export function classifyHttpError(status: number, errorBody?: string): RetryClass {
+  if (status === 401) return 'AUTH_REQUIRED';
+  if (status === 403) return 'AUTH_REQUIRED';
+  if (status === 409) return 'DUPLICATE';
+  if (status === 400) return 'NON_RETRYABLE';
+  if (status === 422) return 'NON_RETRYABLE';
+  if (status === 404) return 'NON_RETRYABLE';
+  if (status === 410) return 'PERMANENT_FAILURE';
+  if (status >= 500 && status < 600) return 'RETRYABLE';
+  if (status === 408) return 'RETRYABLE';
+  if (status === 429) return 'RETRYABLE';
+  if (!status && errorBody?.includes('timeout')) return 'RETRYABLE';
+  if (!status && errorBody?.includes('network')) return 'RETRYABLE';
+  return 'RETRYABLE';
+}
+
+export function computeNextRetryAt(attempts: number, retryClass: RetryClass): string | null {
+  if (retryClass === 'NON_RETRYABLE' || retryClass === 'AUTH_REQUIRED' ||
+      retryClass === 'PERMANENT_FAILURE' || retryClass === 'DUPLICATE') {
+    return null; // لا إعادة محاولة
+  }
+  // exponential backoff: 2s, 4s, 8s, 16s, 32s, 64s — max 5 دقائق
+  const baseMs = 2000;
+  const delayMs = Math.min(baseMs * Math.pow(2, attempts), 300_000);
+  const jitterMs = Math.floor(Math.random() * 1000);
+  return new Date(Date.now() + delayMs + jitterMs).toISOString();
+}
+
 export async function enqueueOffline(
   orderId: string,
   action: 'confirm' | 'reject',
-  payload: Record<string, unknown>
+  payload: Record<string, unknown>,
+  opts?: { idempotencyKey?: string; retryClass?: RetryClass }
 ): Promise<void> {
   const db = await dbReady;
+  // idempotency: نستخدم مفتاحاً ثابتاً حتى لا يُسبب retry إنشاء عملية منطقية جديدة
+  const idempotencyKey = opts?.idempotencyKey ?? `${orderId}:${action}`;
+  // مشروط: إذا كان هناك عنصر pending بنفس idempotency_key لا نُدرج جديداً
+  const existing = await db.getFirstAsync<{ id: string }>(
+    "SELECT id FROM offline_queue WHERE idempotency_key = ? AND status IN ('pending','syncing')",
+    [idempotencyKey]
+  );
+  if (existing) return; // عنصر بنفس المفتاح موجود بالفعل
   const id = `${orderId}-${action}-${Date.now()}`;
+  const retryClass = opts?.retryClass ?? 'RETRYABLE';
   await db.runAsync(
-    'INSERT INTO offline_queue (id, order_id, action, payload) VALUES (?, ?, ?, ?)',
-    [id, orderId, action, JSON.stringify(payload)]
+    `INSERT INTO offline_queue (id, order_id, action, payload, idempotency_key, retry_class)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+    [id, orderId, action, JSON.stringify(payload), idempotencyKey, retryClass]
   );
 }
 
@@ -910,18 +1038,48 @@ export async function getPendingOfflineQueue(): Promise<{
   payload: string;
   attempts: number;
   status: string;
+  idempotency_key: string | null;
+  retry_class: string | null;
+  error_code: string | null;
+  next_retry_at: string | null;
+  created_at: string;
+}[]> {
+  const db = await dbReady;
+  const now = new Date().toISOString();
+  // فقط العناصر RETRYABLE التي حان وقت إعادة محاولتها
+  return db.getAllAsync(
+    `SELECT * FROM offline_queue
+     WHERE status = 'pending'
+       AND retry_class NOT IN ('NON_RETRYABLE','AUTH_REQUIRED','PERMANENT_FAILURE','DUPLICATE')
+       AND (next_retry_at IS NULL OR next_retry_at <= ?)
+     ORDER BY created_at ASC`,
+    [now]
+  ) as any;
+}
+
+export async function getAllPendingOfflineQueue(): Promise<{
+  id: string;
+  order_id: string;
+  action: string;
+  payload: string;
+  attempts: number;
+  status: string;
+  idempotency_key: string | null;
+  retry_class: string | null;
+  error_code: string | null;
+  next_retry_at: string | null;
   created_at: string;
 }[]> {
   const db = await dbReady;
   return db.getAllAsync(
-    "SELECT * FROM offline_queue WHERE status = 'pending' ORDER BY created_at ASC"
+    "SELECT * FROM offline_queue WHERE status IN ('pending','syncing') ORDER BY created_at ASC"
   ) as any;
 }
 
 export async function getOfflineQueueCount(): Promise<number> {
   const db = await dbReady;
   const row = await db.getFirstAsync<{ count: number }>(
-    "SELECT COUNT(*) as count FROM offline_queue WHERE status = 'pending'"
+    "SELECT COUNT(*) as count FROM offline_queue WHERE status IN ('pending','syncing')"
   );
   return row?.count ?? 0;
 }
@@ -929,18 +1087,92 @@ export async function getOfflineQueueCount(): Promise<number> {
 export async function updateOfflineQueueStatus(
   id: string,
   status: 'pending' | 'syncing' | 'failed',
-  attempts: number
+  attempts: number,
+  opts?: { errorCode?: string; retryClass?: RetryClass }
 ): Promise<void> {
   const db = await dbReady;
+  const retryClass = opts?.retryClass ?? 'RETRYABLE';
+  const nextRetry = status === 'pending' ? computeNextRetryAt(attempts, retryClass) : null;
   await db.runAsync(
-    'UPDATE offline_queue SET status = ?, attempts = ? WHERE id = ?',
-    [status, attempts, id]
+    'UPDATE offline_queue SET status = ?, attempts = ?, error_code = ?, retry_class = ?, next_retry_at = ? WHERE id = ?',
+    [status, attempts, opts?.errorCode ?? null, retryClass, nextRetry, id]
   );
 }
 
 export async function deleteOfflineQueueItem(id: string): Promise<void> {
   const db = await dbReady;
   await db.runAsync('DELETE FROM offline_queue WHERE id = ?', [id]);
+}
+
+// ====== Event Deduplication ======
+
+export async function recordDedupEvent(
+  dedupKey: string,
+  eventType: string
+): Promise<{ isNew: boolean; occurrenceCount: number }> {
+  const db = await dbReady;
+  const existing = await db.getFirstAsync<{ occurrence_count: number }>(
+    'SELECT occurrence_count FROM event_deduplication WHERE dedup_key = ?',
+    [dedupKey]
+  );
+  if (existing) {
+    const count = existing.occurrence_count + 1;
+    await db.runAsync(
+      "UPDATE event_deduplication SET last_seen_at = datetime('now'), occurrence_count = ? WHERE dedup_key = ?",
+      [count, dedupKey]
+    );
+    return { isNew: false, occurrenceCount: count };
+  }
+  await db.runAsync(
+    'INSERT INTO event_deduplication (dedup_key, event_type) VALUES (?, ?)',
+    [dedupKey, eventType]
+  );
+  return { isNew: true, occurrenceCount: 1 };
+}
+
+export async function isDedupEventSeen(dedupKey: string): Promise<boolean> {
+  const db = await dbReady;
+  const row = await db.getFirstAsync<{ dedup_key: string }>(
+    'SELECT dedup_key FROM event_deduplication WHERE dedup_key = ?',
+    [dedupKey]
+  );
+  return row !== null && row !== undefined;
+}
+
+export async function resolveDedupEvent(dedupKey: string): Promise<void> {
+  const db = await dbReady;
+  await db.runAsync('UPDATE event_deduplication SET resolved = 1 WHERE dedup_key = ?', [dedupKey]);
+}
+
+// ====== Timestamp integrity helpers for orders ======
+
+export async function setOrderTimestamp(
+  orderId: string,
+  field: 'sms_received_at' | 'notification_received_at' | 'first_seen_local_at' |
+         'processed_at' | 'verified_at' | 'sync_started_at' | 'synced_at',
+  value: string
+): Promise<void> {
+  const db = await dbReady;
+  // لا نُحدّث إذا كانت القيمة موجودة بالفعل (نحافظ على أول قيمة)
+  if (field === 'sms_received_at' || field === 'notification_received_at' || field === 'first_seen_local_at') {
+    await db.runAsync(
+      `UPDATE orders_cache SET ${field} = ? WHERE id = ? AND ${field} IS NULL`,
+      [value, orderId]
+    );
+  } else {
+    await db.runAsync(`UPDATE orders_cache SET ${field} = ? WHERE id = ?`, [value, orderId]);
+  }
+}
+
+export async function markSmsSentToOrder(
+  smsId: string,
+  orderId: string
+): Promise<void> {
+  const db = await dbReady;
+  await db.runAsync(
+    "UPDATE local_sms_index SET matched_order_id = ?, match_status = 'matched' WHERE id = ?",
+    [orderId, smsId]
+  );
 }
 
 export async function logVerification(

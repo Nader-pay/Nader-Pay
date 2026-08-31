@@ -1,4 +1,5 @@
 import type { Order, ParsedTransaction, MatchResult } from '@/types/agent';
+import { isTransactionProcessed, upsertProcessedTransaction } from '@/lib/database';
 
 const DEFAULT_SEARCH_WINDOW_HOURS = 24;
 
@@ -44,6 +45,63 @@ export function findBestMatch(
   }
 
   return candidates[0];
+}
+
+/**
+ * محاولة مطابقة رسائل SMS المُفهرسة سابقاً مع طلب جديد وصل.
+ * يُستدعى عند وصول طلب جديد في وضع الـ offline أو بعد استعادة الاتصال.
+ * يمنع استهلاك نفس SMS لأكثر من طلب عبر processed_transactions.
+ */
+export async function tryMatchStoredSmsForOrder(
+  order: Order,
+  options: MatchOptions
+): Promise<{ matched: boolean; transaction?: ParsedTransaction; score?: number }> {
+  const { findMatchingSmsInIndex } = await import('@/services/localSmsIndex');
+  const candidates = await findMatchingSmsInIndex({
+    id: order.id,
+    amount: order.amount,
+    provider: order.provider as any,
+    expected_sender_phone: order.expected_sender_phone ?? undefined,
+    expected_sender_name: order.expected_sender_name ?? undefined,
+    expected_recipient_wallet: order.expected_recipient_wallet ?? undefined,
+    created_at: order.created_at,
+    maxSearchWindowHours: options.searchWindowHours ?? DEFAULT_SEARCH_WINDOW_HOURS,
+  });
+
+  // فلترة: استبعد SMS المرتبطة بطلبات أخرى (cross-order consumption)
+  const available: ParsedTransaction[] = [];
+  for (const tx of candidates) {
+    if (!tx.transactionId) {
+      available.push(tx);
+      continue;
+    }
+    // هل هذه العملية مرتبطة بطلب آخر؟
+    const processed = await isTransactionProcessed(tx.transactionId);
+    if (!processed) {
+      available.push(tx);
+    }
+    // إذا كانت مرتبطة بنفس الطلب — مقبولة (re-match بعد إعادة تشغيل)
+    else {
+      const { dbReady } = await import('@/lib/database');
+      const db = await dbReady;
+      const row = await db.getFirstAsync<{ order_id: string }>(
+        'SELECT order_id FROM processed_transactions WHERE transaction_id = ?',
+        [tx.transactionId]
+      );
+      if (row?.order_id === order.id) available.push(tx);
+    }
+  }
+
+  if (available.length === 0) return { matched: false };
+
+  const best = findBestMatch(available[0], [order], options);
+  if (!best || !best.confirmed) return { matched: false };
+
+  return {
+    matched: true,
+    transaction: best.transaction,
+    score: best.score,
+  };
 }
 
 function isOrderEligible(order: Order, transaction: ParsedTransaction, searchWindowHours: number): boolean {
@@ -134,14 +192,14 @@ function scoreMatch(
   };
 }
 
-function phonesMatch(a: string, b: string): boolean {
+export function phonesMatch(a: string, b: string): boolean {
   const na = normalizePhone(a);
   const nb = normalizePhone(b);
   if (!na || !nb) return false;
   return na === nb || na.slice(-10) === nb.slice(-10);
 }
 
-function normalizePhone(phone: string): string | null {
+export function normalizePhone(phone: string): string | null {
   let p = phone.replace(/[\s\-()]/g, '');
   if (!p) return null;
   if (p.startsWith('+20')) p = '0' + p.slice(3);
@@ -170,3 +228,4 @@ function normalizeName(name: string): string {
     .replace(/\s+/g, ' ')
     .trim();
 }
+
