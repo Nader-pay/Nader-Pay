@@ -25,11 +25,21 @@ import {
   HardDrive,
   ShieldCheck,
   Loader2,
+  CloudOff,
+  CloudCog,
+  CloudCheck,
 } from 'lucide-react-native';
 
 import { useAgent } from '@/contexts/AgentContext';
 import { getActiveServerProfile } from '@/services/serverProfileManager';
 import { getLastBackendRequestMeta } from '@/services/backendConnector';
+import {
+  getDatabaseStatus,
+  getSyncStatus,
+  getBackgroundStatus,
+  computeSyncStatus,
+} from '@/services/diagnosticsEngine';
+import { getOfflineQueueCount } from '@/lib/database';
 import type { ServerProfile } from '@/types/backend';
 
 type DiagnosticState = 'ok' | 'warning' | 'error' | 'checking';
@@ -54,6 +64,13 @@ export default function DiagnosticsScreen() {
   const [activeProfile, setActiveProfile] = useState<ServerProfile | null>(null);
   const [lastMeta, setLastMeta] = useState<ReturnType<typeof getLastBackendRequestMeta>>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
+
+  // حالات حقيقية من diagnosticsEngine — لا fake
+  const [dbStatus, setDbStatus] = useState<ReturnType<typeof getDatabaseStatus>>('READY');
+  const [syncStatus, setSyncStatus] = useState<ReturnType<typeof getSyncStatus>>('SYNCED');
+  const [bgStatus, setBgStatus] = useState<ReturnType<typeof getBackgroundStatus>>('STOPPED');
+  const [pendingCount, setPendingCount] = useState(0);
+
   const d = state.diagnostics;
 
   useFocusEffect(
@@ -62,8 +79,20 @@ export default function DiagnosticsScreen() {
       (async () => {
         setActiveProfile(await getActiveServerProfile());
         setLastMeta(getLastBackendRequestMeta());
+        // قراءة الحالات الحقيقية من diagnosticsEngine
+        setDbStatus(getDatabaseStatus());
+        const pending = await getOfflineQueueCount();
+        setPendingCount(pending);
+        const syncSt = computeSyncStatus(
+          pending,
+          state.connectionStatus === 'SYNCING',
+          state.connectionStatus === 'ERROR'
+        );
+        setSyncStatus(syncSt);
+        const bg = getBackgroundStatus();
+        setBgStatus(d.backgroundAgent ? (bg === 'RESTRICTED' ? 'RESTRICTED' : 'RUNNING') : 'STOPPED');
       })();
-    }, [runDiagnostics])
+    }, [runDiagnostics, state.connectionStatus, d.backgroundAgent])
   );
 
   const handleTestSync = async () => {
@@ -162,10 +191,14 @@ export default function DiagnosticsScreen() {
       key: 'background',
       icon: Server,
       label: 'المزامنة في الخلفية',
-      value: d.backgroundAgent ? 'مسجلة' : 'غير مسجلة',
-      state: d.backgroundAgent ? 'ok' : 'warning',
+      value: bgStatus === 'RUNNING' ? 'تعمل ✓' : bgStatus === 'RESTRICTED' ? 'مقيدة' : 'متوقفة',
+      state: bgStatus === 'RUNNING' ? 'ok' : bgStatus === 'RESTRICTED' ? 'error' : 'warning',
       reason: 'تجعل المزامنة تستمر عندما لا يكون التطبيق في المقدمة.',
-      solution: d.backgroundAgent ? 'مهمة الخلفية مفعلة.' : 'فعّل المزامنة في الخلفية من الإعدادات.',
+      solution: bgStatus === 'RUNNING'
+        ? 'مهمة الخلفية تعمل بشكل طبيعي.'
+        : bgStatus === 'RESTRICTED'
+        ? 'النظام يقيد التطبيق في الخلفية — أضفه لقائمة استثناءات البطارية.'
+        : 'فعّل المزامنة في الخلفية من إعدادات الوكيل.',
     },
     {
       key: 'device',
@@ -189,22 +222,52 @@ export default function DiagnosticsScreen() {
       key: 'database',
       icon: Database,
       label: 'قاعدة البيانات',
-      value: d.databaseReady ? 'جاهزة' : 'غير جاهزة',
-      state: d.databaseReady ? 'ok' : 'error',
+      value: (() => {
+        if (dbStatus === 'READY') return 'جاهزة ✓';
+        if (dbStatus === 'MIGRATION_REQUIRED') return 'تحديث مطلوب';
+        return 'خطأ';
+      })(),
+      state: dbStatus === 'READY' ? 'ok' : dbStatus === 'MIGRATION_REQUIRED' ? 'warning' : 'error',
       reason: 'تخزن الطلبات والرسائل المفهرسة محليًا.',
-      solution: d.databaseReady ? 'قاعدة البيانات تعمل.' : 'أعد تشغيل التطبيق، وإن استمرت المشكلة أبلغ الفريق.',
+      solution: dbStatus === 'READY'
+        ? 'قاعدة البيانات تعمل بشكل طبيعي.'
+        : dbStatus === 'MIGRATION_REQUIRED'
+        ? 'تحديث مطلوب — سيتم تلقائياً عند إعادة التشغيل.'
+        : 'أعد تشغيل التطبيق. إذا استمرت المشكلة أبلغ الفريق.',
+    },
+    {
+      key: 'sync_status',
+      icon: CloudCog,
+      label: 'حالة المزامنة',
+      value: (() => {
+        if (syncStatus === 'SYNCED') return 'متزامن ✓';
+        if (syncStatus === 'SYNCING') return 'جارٍ المزامنة...';
+        if (syncStatus === 'PENDING') return `${pendingCount} معلق`;
+        return 'فشلت المزامنة';
+      })(),
+      state: syncStatus === 'SYNCED' ? 'ok'
+        : syncStatus === 'SYNCING' ? 'checking'
+        : syncStatus === 'PENDING' ? 'warning'
+        : 'error',
+      reason: 'تعكس حالة مزامنة العمليات المحلية مع الخادم.',
+      solution: syncStatus === 'SYNCED'
+        ? 'جميع العمليات متزامنة مع الخادم.'
+        : syncStatus === 'SYNCING'
+        ? 'جارٍ المزامنة الآن...'
+        : syncStatus === 'PENDING'
+        ? `${pendingCount} عملية بانتظار الاتصال — ستُزامَن تلقائياً.`
+        : 'فشلت المزامنة — اضغط "اختبار المزامنة" أو تحقق من الخادم.',
     },
     {
       key: 'sources',
       icon: ShieldCheck,
       label: 'مصادر الدفع الموثقة',
       value: String(d.verifiedProviderSources ?? 0),
-      // ✅ مصادر الدفع = 0 هي تنبيه (warning) وليست خطأ يمنع تشغيل الوكيل
       state: (d.verifiedProviderSources ?? 0) > 0 ? 'ok' : 'warning',
       reason: 'رسائل SMS من مصادر غير موثقة لن تُعالج.',
       solution: (d.verifiedProviderSources ?? 0) > 0
         ? `${d.verifiedProviderSources} مصدر موثق — الوكيل يعمل بشكل طبيعي.`
-        : 'انتقل إلى مصادر الدفع وتوثق مصدر SMS. الوكيل يعمل لكن لن يعالج رسائل حتى يوجد مصدر موثق.',
+        : 'انتقل إلى مصادر الدفع وأضف مصدر SMS موثق.',
     },
   ];
 

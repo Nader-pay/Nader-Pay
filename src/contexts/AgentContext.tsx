@@ -14,10 +14,10 @@ import * as Network from 'expo-network';
 import { loadSettings, saveSettings, loadDeviceState, saveDeviceState } from '@/services/agentSettings';
 import { sendHeartbeat, sendEvidenceEvent, sendRejectEvent } from '@/services/deviceRegistration';
 import { parseAnySms } from '@/services/smsParser';
-import { findBestMatch } from '@/services/matchingEngine';
+import { findBestMatch, tryMatchStoredSmsForOrder } from '@/services/matchingEngine';
 import { readExistingPaymentMessages, incrementalScan } from '@/services/smsReader';
 import { indexSmsMessage, findMatchingSmsInIndex, getLastIndexedSmsAt } from '@/services/localSmsIndex';
-import { runSyncEngine } from '@/services/syncEngine';
+import { runSyncEngine, reconcileLocalEvents } from '@/services/syncEngine';
 import {
   startRealtimeSync,
   stopRealtimeSync,
@@ -36,6 +36,8 @@ import { registerBackgroundSync, unregisterBackgroundSync } from '@/services/bac
 import { getPermissionSnapshot, requestSmsPermission } from '@/services/permissionManager';
 import { buildStatusSnapshot } from '@/services/statusEngine';
 import { listProviderSources } from '@/services/providerSourceService';
+import { onNetworkRestored, onStartupRecovery } from '@/services/recoveryManager';
+import { logDiagnosticEvent, markModuleHealthy, markModuleError, computeSyncStatus } from '@/services/diagnosticsEngine';
 import {
   cacheOrders,
   getCachedOrders,
@@ -51,6 +53,8 @@ import {
   deleteOfflineQueueItem,
   logVerification,
   addTimelineStage,
+  setOrderTimestamp,
+  markSmsSentToOrder,
 } from '@/lib/database';
 import { setupNotifications, showAgentNotification } from '@/services/notifications';
 import type { AgentSettings, DeviceState, AgentState, Order, SmsMessage, MatchResult, AgentOrderStatus } from '@/types/agent';
@@ -389,10 +393,16 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
       rawSms: transaction.rawMessage,
       syncStatus: 'syncing',
     });
+    // تسجيل verified_at
+    await setOrderTimestamp(order.id, 'verified_at', new Date().toISOString());
+
     const online = await checkOnline();
     if (!online) {
       await updateOrderLocal(order.id, { localStatus: 'confirmed_local', syncStatus: 'pending' });
-      await enqueueOffline(order.id, 'confirm', { action: 'confirm', transaction, orderId: order.id });
+      await enqueueOffline(order.id, 'confirm',
+        { action: 'confirm', transaction, orderId: order.id },
+        { idempotencyKey: `confirm:${order.id}` }
+      );
       await addTimelineStage(order.id, 'CONFIRMED_LOCAL', 'completed', 'تم التأكيد محليًا - بانتظار المزامنة');
       await logVerification(order.id, 'confirm', 'sync_pending', 'لا يوجد اتصال بالإنترنت', transaction, transaction.transactionId);
       await emitNotification('Nader Pay', 'تم حفظ التأكيد محليًا، سيتم المزامنة عند العودة للاتصال', { orderId: order.id });
@@ -408,18 +418,25 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
         localStatus: 'confirmed',
         syncStatus: 'synced',
       });
+      await setOrderTimestamp(order.id, 'synced_at', new Date().toISOString());
       await addTimelineStage(order.id, 'SYNCED', 'completed', 'تمت المزامنة مع الخادم');
       await logVerification(order.id, 'confirm', 'confirmed', 'تم التأكيد', transaction, transaction.transactionId);
       await emitNotification('Nader Pay', 'تم تأكيد الدفع بنجاح', { orderId: order.id });
       setConnectionStatus('ONLINE');
+      markModuleHealthy('sync');
       return { ok: true, offline: false };
     }
 
     await updateOrderLocal(order.id, { localStatus: 'confirmed_local', syncStatus: 'pending' });
-    await enqueueOffline(order.id, 'confirm', { action: 'confirm', transaction, orderId: order.id });
+    await enqueueOffline(order.id, 'confirm',
+      { action: 'confirm', transaction, orderId: order.id },
+      { idempotencyKey: `confirm:${order.id}` }
+    );
+    await setOrderTimestamp(order.id, 'sync_started_at', new Date().toISOString());
     await addTimelineStage(order.id, 'SYNC_PENDING', 'current', result.error || 'فشل المزامنة');
     await logVerification(order.id, 'confirm', 'sync_failed', result.error || 'فشل الإرسال', transaction, transaction.transactionId);
     setConnectionStatus('ERROR');
+    markModuleError('sync', result.error || 'sync_failed');
     return { ok: false, offline: false, error: result.error };
   }, [checkOnline, deviceState, emitNotification, setConnectionStatus]);
 
@@ -455,15 +472,20 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
         transaction.sourceVerification = 'verified';
       }
 
-      if (await isTransactionProcessed(transaction.transactionId)) {
-        await logVerification('', 'sms_duplicate', 'duplicate', 'تمت معالجة الرسالة من قبل', undefined, transaction.transactionId);
+      // deduplication على مستوى transactionId — يمنع معالجة نفس الرسالة مرتين
+      if (transaction.transactionId && await isTransactionProcessed(transaction.transactionId)) {
+        await logDiagnosticEvent('sms_duplicate', `معالجة مكررة: ${transaction.transactionId}`, {
+          severity: 'INFO', module: 'matching', dedupKey: `sms_dup:${transaction.transactionId}`
+        });
         return;
       }
 
       const txDate = new Date(transaction.occurredAt).getTime();
       const now = Date.now();
       if (Number.isNaN(txDate) || now - txDate > currentSettings.maxSearchWindowHours * 60 * 60 * 1000) {
-        await upsertProcessedTransaction(transaction.transactionId, transaction.provider ?? 'vodafone_cash', null, 'expired');
+        if (transaction.transactionId) {
+          await upsertProcessedTransaction(transaction.transactionId, transaction.provider ?? 'vodafone_cash', null, 'expired');
+        }
         await logVerification('', 'sms_expired', 'rejected', 'خارج نافذة البحث', undefined, transaction.transactionId);
         return;
       }
@@ -479,7 +501,9 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
         requireSourceVerification: currentSettings.requireSourceVerification,
       });
       if (!best) {
-        await upsertProcessedTransaction(transaction.transactionId, transaction.provider ?? 'vodafone_cash', null, 'no_match');
+        if (transaction.transactionId) {
+          await upsertProcessedTransaction(transaction.transactionId, transaction.provider ?? 'vodafone_cash', null, 'no_match');
+        }
         await logVerification('', 'sms_no_match', 'no_match', 'لا يوجد طلب مطابق', undefined, transaction.transactionId);
         return;
       }
@@ -488,8 +512,20 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
       await addTimelineStage(best.order.id, 'VALIDATING', 'completed', `درجة التطابق: ${best.score}`);
       await addTimelineStage(best.order.id, 'DUPLICATE_CHECK', 'completed', 'لم يتم العثور على تكرار');
 
+      // تسجيل sms_received_at و processed_at للطلب
+      await setOrderTimestamp(best.order.id, 'sms_received_at', message.date || new Date().toISOString());
+      await setOrderTimestamp(best.order.id, 'processed_at', new Date().toISOString());
+
+      // تحديث match_status في SMS index
+      const smsIndexId = (transaction as any)._smsIndexId;
+      if (smsIndexId) {
+        await markSmsSentToOrder(smsIndexId, best.order.id);
+      }
+
       if (!best.confirmed) {
-        await upsertProcessedTransaction(transaction.transactionId, transaction.provider ?? 'vodafone_cash', best.order.id, 'pending');
+        if (transaction.transactionId) {
+          await upsertProcessedTransaction(transaction.transactionId, transaction.provider ?? 'vodafone_cash', best.order.id, 'pending');
+        }
         await updateOrderLocal(best.order.id, {
           localStatus: 'review_required',
           matchScore: best.score,
@@ -502,7 +538,9 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
         return;
       }
 
-      await upsertProcessedTransaction(transaction.transactionId, transaction.provider ?? 'vodafone_cash', best.order.id, 'pending');
+      if (transaction.transactionId) {
+        await upsertProcessedTransaction(transaction.transactionId, transaction.provider ?? 'vodafone_cash', best.order.id, 'pending');
+      }
       await updateOrderLocal(best.order.id, {
         localStatus: 'matched',
         matchScore: best.score,
@@ -529,14 +567,22 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
     [settings, deviceState, pendingOrdersRef, emitNotification, sendEvidence]
   );
 
+  // processMessage: قفل على مستوى transactionId لمنع المعالجة المتزامنة لنفس الرسالة
+  const processingTransactions = useRef<Set<string>>(new Set());
+
   const processMessage = useCallback(
     async (message: SmsMessage) => {
-      if (isProcessing.current) return;
-      isProcessing.current = true;
+      // احسب hash/key للرسالة — نستخدم id إذا وُجد وإلا نُنشئ مفتاحاً من المحتوى
+      const txKey = message.id || `${message.originatingAddress}:${message.date}:${message.body.slice(0, 40)}`;
+
+      // قفل على مستوى الرسالة (لمنع المعالجة المتوازية لنفس الرسالة)
+      if (processingTransactions.current.has(txKey)) return;
+      processingTransactions.current.add(txKey);
+
       try {
         await handleMessage(message);
       } finally {
-        isProcessing.current = false;
+        processingTransactions.current.delete(txKey);
       }
     },
     [handleMessage]
@@ -835,7 +881,10 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
 
       const online = await checkOnline();
       if (!online) {
-        await enqueueOffline(orderId, 'reject', { action: 'reject', reason: reason || 'manual_reject', orderId });
+        await enqueueOffline(orderId, 'reject',
+          { action: 'reject', reason: reason || 'manual_reject', orderId },
+          { idempotencyKey: `reject:${orderId}` }
+        );
         await logVerification(orderId, 'reject', 'sync_pending', 'لا يوجد اتصال بالإنترنت');
         setConnectionStatus('OFFLINE');
         return { ok: true, offline: true };
@@ -845,6 +894,7 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
       const result = await sendRejectEvent(deviceState, orderId, reason || 'manual_reject');
       if (result.ok) {
         await updateOrderLocal(orderId, { localStatus: 'rejected', syncStatus: 'synced' });
+        await setOrderTimestamp(orderId, 'synced_at', new Date().toISOString());
         await logVerification(orderId, 'reject', 'rejected', reason);
         await addTimelineStage(orderId, 'SYNCED', 'completed', 'تم رفض الطلب وتمت المزامنة');
         await emitNotification('Nader Pay', 'تم رفض الطلب', { orderId });
@@ -853,7 +903,10 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
       }
 
       await updateOrderLocal(orderId, { localStatus: 'rejected_local', syncStatus: 'pending' });
-      await enqueueOffline(orderId, 'reject', { action: 'reject', reason: reason || 'manual_reject', orderId });
+      await enqueueOffline(orderId, 'reject',
+        { action: 'reject', reason: reason || 'manual_reject', orderId },
+        { idempotencyKey: `reject:${orderId}` }
+      );
       await logVerification(orderId, 'reject', 'sync_failed', result.error || 'فشل الإرسال');
       setConnectionStatus('ERROR');
       return { ok: false, error: result.error };
@@ -998,7 +1051,7 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
     return granted;
   }, [scanSmsNow, runDiagnostics]);
 
-  // تحميل الإعدادات وحالة الجهاز عند البدء
+  // تحميل الإعدادات وحالة الجهاز عند البدء — مع startup recovery كامل
   useEffect(() => {
     let active = true;
 
@@ -1013,7 +1066,7 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
       setSettings(loadedSettings);
       setDeviceState(loadedDevice);
 
-      // طلب أذونات SMS و الإشعارات تلقائياً عند أول تشغيل
+      // طلب أذونات SMS والإشعارات تلقائياً عند أول تشغيل
       let permissions = await getPermissionSnapshot();
       if (permissions.sms !== 'granted') {
         await requestSmsPermission();
@@ -1035,6 +1088,7 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
         },
         null
       );
+      if (!active) return;
       setState((s) => ({
         ...s,
         isReady: true,
@@ -1060,6 +1114,21 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
       if (loadedSettings.backgroundSyncEnabled) {
         await registerBackgroundSync();
       }
+
+      // Startup recovery: جلب الطلبات + مصالحة SMS + مزامنة queue
+      if (loadedSettings.enabled && loadedDevice.deviceId) {
+        try {
+          await onStartupRecovery(loadedDevice);
+          // تحديث الطلبات المحلية بعد الاسترداد
+          const cached = await getCachedOrders();
+          if (active && cached.length > 0) {
+            // سيتم تحديث pendingOrders عبر refreshOrders التي ستُستدعى بواسطة realtime useEffect
+          }
+        } catch (e) {
+          await logEvent('startup_recovery_warn', e instanceof Error ? e.message : 'startup_recovery_failed');
+        }
+      }
+
       setInitDone(true);
     })();
 
@@ -1077,18 +1146,15 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
       // عند رجوع التطبيق للواجهة بعد الخلفية
       if (!wasActive && nextState === 'active' && settings.enabled && deviceState.deviceId) {
         const online = await checkOnline();
-        // استئناف Realtime إذا كان enabled
         if (online) {
           reconnectRealtime().catch(() => undefined);
         }
-        // إخبار Runtime بالتغيير
         resumeRuntime(online).catch(() => undefined);
-        // تحديث diagnostics
         runDiagnostics().catch(() => undefined);
       }
     });
 
-    // مراقبة دورية للشبكة كـ fallback (كل 10 ثوانٍ — بدلاً من 5s السابقة)
+    // مراقبة دورية للشبكة كـ fallback (كل 10 ثوانٍ)
     networkTimer.current = setInterval(() => {
       monitorNetwork();
     }, 10_000);
@@ -1107,6 +1173,16 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
       await notifyNetworkChange(isConnected);
       if (isConnected && settings.enabled && deviceState.deviceId) {
         reconnectRealtime().catch(() => undefined);
+        // تشغيل تسلسل الاسترداد الكامل عند استعادة الشبكة
+        onNetworkRestored({
+          deviceState,
+          gracefulDelayMs: 800,
+          notifyOnComplete: settings.notificationsEnabled,
+          onNotify: emitNotification,
+          onStep: (step, total, label) => {
+            // يمكن استخدامها لعرض progress في UI مستقبلاً
+          },
+        }).catch(() => undefined);
       }
     });
 
@@ -1118,7 +1194,7 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
         networkTimer.current = null;
       }
     };
-  }, [monitorNetwork, settings.enabled, deviceState.deviceId, checkOnline, runDiagnostics]);
+  }, [monitorNetwork, settings.enabled, settings.notificationsEnabled, deviceState, checkOnline, runDiagnostics, emitNotification]);
 
   // إعادة مزامنة تلقائية عند الانتقال من Offline إلى Online
   useEffect(() => {

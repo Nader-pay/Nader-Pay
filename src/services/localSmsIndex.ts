@@ -61,19 +61,24 @@ export async function findMatchingSmsInIndex(
     ? new Date(new Date(order.created_at).getTime() - 60 * 60 * 1000).toISOString()
     : new Date(Date.now() - windowHours * 60 * 60 * 1000).toISOString();
 
+  // فقط رسائل غير مطابقة لطلبات أخرى (match_status != 'matched' أو matched_order_id = orderId)
   const rows = (await db.getAllAsync(
-    `SELECT parsed_payload FROM local_sms_index
+    `SELECT id, parsed_payload, matched_order_id, match_status FROM local_sms_index
      WHERE amount = ?
        AND received_at >= ?
        AND parsed_payload IS NOT NULL
+       AND (match_status IS NULL OR match_status = 'unmatched' OR matched_order_id = ?)
      ORDER BY received_at DESC`,
-    [order.amount, since]
-  )) as { parsed_payload: string }[];
+    [order.amount, since, order.id ?? '']
+  )) as { id: string; parsed_payload: string; matched_order_id: string | null; match_status: string | null }[];
 
   return rows
     .map((r) => {
       try {
-        return JSON.parse(r.parsed_payload) as ParsedTransaction;
+        const parsed = JSON.parse(r.parsed_payload) as ParsedTransaction;
+        // أضف smsIndexId للاستخدام لاحقاً في markSmsSentToOrder
+        (parsed as any)._smsIndexId = r.id;
+        return parsed;
       } catch {
         return null;
       }
