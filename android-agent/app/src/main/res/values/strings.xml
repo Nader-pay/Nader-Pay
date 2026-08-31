@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">PayVerify Agent</string>
+    <string name="notification_listener_label">مستمع إشعارات المدفوعات</string>
+    <string name="notification_channel_sync">مزامنة المدفوعات</string>
+    <string name="notification_channel_alerts">تنبيهات المدفوعات</string>
+    <!-- قنوات الإشعارات -->
+    <string name="channel_sync_name">مزامنة</string>
+    <string name="channel_alerts_name">تنبيهات</string>
+    <!-- نصوص الواجهة -->
+    <string name="perm_notification_title">صلاحية الوصول للإشعارات</string>
+    <string name="perm_notification_rationale">يحتاج التطبيق للوصول إلى الإشعارات لاكتشاف دفعات Vodafone Cash وتأكيدها تلقائيًا. لا يتم الوصول إلى إشعارات التطبيقات الأخرى.</string>
+    <string name="perm_notification_action">فتح الإعدادات</string>
+    <string name="status_connected">متصل بالسيرفر</string>
+    <string name="status_disconnected">غير متصل</string>
+    <string name="status_listener_active">مستمع الإشعارات نشط</string>
+    <string name="status_listener_inactive">مستمع الإشعارات غير نشط</string>
+</resources>
