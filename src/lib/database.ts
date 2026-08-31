@@ -324,25 +324,36 @@ export const dbReady = SQLite.openDatabaseAsync(DB_NAME, DB_OPTIONS)
     await db.execAsync('ALTER TABLE provider_sources ADD COLUMN last_verification_result TEXT');
   }
 
-  // Seed: إضافة بيانات الخادم الافتراضية إذا لم تكن موجودة
+  // Seed & Update: التأكد من وجود الخادم الافتراضي ببيانات الاتصال الصحيحة دائماً
+  const defaultId = 'default-nader-pay-server';
+  const defaultUrl = 'https://ccimllgqdxuvymdeikmn.supabase.co/functions/v1/backend-proxy';
+  const defaultToken = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNjaW1sbGdxZHh1dnltZGVpa21uIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODY2ODk3OTQsImV4cCI6MjEwMjI2NTc5NH0.intP2QkhXHswRigBpCYb127yNk3VAfj68rpS_Ujvies';
+  const now = new Date().toISOString();
+
+  // 1. تحديث أي خادم قديم موجود يحمل ccimllgqdxuvymdeikmn ليكون بالتوكن الصحيح
+  await db.runAsync(
+    `UPDATE server_profiles
+     SET token = ?, auth_type = 'bearer', base_url = ?, updated_at = ?
+     WHERE base_url LIKE '%ccimllgqdxuvymdeikmn%' OR id = ?`,
+    [defaultToken, defaultUrl, now, defaultId]
+  );
+
+  // 2. إذا لم يكن هناك أي خادم، نقوم بإدراجه وتنشيطه
   const existingProfiles = await db.getAllAsync<{ id: string }>(
     "SELECT id FROM server_profiles LIMIT 1"
   );
   if (existingProfiles.length === 0) {
-    const defaultId = 'default-nader-pay-server';
-    const defaultToken = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImhibGRobnBkdW9jem5lb3lmenl6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODc3MzM2NzksImV4cCI6MjEwMzMwOTY3OX0.uT0Oy_AYcMIQe1VNrWLTnPCSiE141MntZbp3IgFLpxE';
-    const now = new Date().toISOString();
     await db.runAsync(
-      `INSERT OR IGNORE INTO server_profiles
+      `INSERT OR REPLACE INTO server_profiles
         (id, name, base_url, auth_type, token, discovery_url, is_active, is_connected, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, 1, 0, ?, ?)`,
       [
         defaultId,
         'Nader Pay',
-        'https://hbldhnpduoczneoyfzyz.supabase.co/functions/v1/backend-proxy',
+        defaultUrl,
         'bearer',
         defaultToken,
-        '',
+        '/config',
         now,
         now,
       ]

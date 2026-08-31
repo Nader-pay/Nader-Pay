@@ -26,16 +26,16 @@ export default function ServerProfileScreen() {
   const insets = useSafeAreaInsets();
   const isNew = id === 'new';
 
-  const [name, setName] = useState('');
-  const [baseUrl, setBaseUrl] = useState('');
-  const [normalizedUrl, setNormalizedUrl] = useState('');
+  const [name, setName] = useState('Nader Pay');
+  const [baseUrl, setBaseUrl] = useState('https://ccimllgqdxuvymdeikmn.supabase.co/functions/v1/backend-proxy');
+  const [normalizedUrl, setNormalizedUrl] = useState('https://ccimllgqdxuvymdeikmn.supabase.co/functions/v1/backend-proxy');
   const [authType, setAuthType] = useState<AuthType>('bearer');
   const [apiKey, setApiKey] = useState('');
-  const [token, setToken] = useState('');
+  const [token, setToken] = useState('eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNjaW1sbGdxZHh1dnltZGVpa21uIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODY2ODk3OTQsImV4cCI6MjEwMjI2NTc5NH0.intP2QkhXHswRigBpCYb127yNk3VAfj68rpS_Ujvies');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [customHeaders, setCustomHeaders] = useState('');
-  const [discoveryUrl, setDiscoveryUrl] = useState('');
+  const [discoveryUrl, setDiscoveryUrl] = useState('/config');
 
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);

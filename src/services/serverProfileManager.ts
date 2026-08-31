@@ -16,9 +16,12 @@ function credKey(profileId: string, type: string) {
   return `${CRED_PREFIX}${profileId}_${type}`;
 }
 
+const DEFAULT_NADERPAY_ANON_TOKEN = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNjaW1sbGdxZHh1dnltZGVpa21uIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODY2ODk3OTQsImV4cCI6MjEwMjI2NTc5NH0.intP2QkhXHswRigBpCYb127yNk3VAfj68rpS_Ujvies';
+
 async function loadCredentials(profile: {
   id: string;
   auth_type: string;
+  base_url?: string;
   api_key: string | null;
   token: string | null;
   username: string | null;
@@ -28,10 +31,10 @@ async function loadCredentials(profile: {
   const authType = profile.auth_type as AuthType;
   const result: Partial<Pick<ServerProfile, 'apiKey' | 'token' | 'username' | 'password' | 'customHeaders'>> = {};
   if (authType === 'api_key') {
-    result.apiKey = (await getSecureItem(credKey(profile.id, 'api_key'))) ?? profile.api_key ?? undefined;
+    result.apiKey = (await getSecureItem(credKey(profile.id, 'api_key'))) ?? profile.api_key ?? (profile.base_url?.includes('ccimllgqdxuvymdeikmn') ? DEFAULT_NADERPAY_ANON_TOKEN : undefined);
   }
   if (authType === 'bearer') {
-    result.token = (await getSecureItem(credKey(profile.id, 'bearer'))) ?? profile.token ?? undefined;
+    result.token = (await getSecureItem(credKey(profile.id, 'bearer'))) ?? profile.token ?? (profile.base_url?.includes('ccimllgqdxuvymdeikmn') ? DEFAULT_NADERPAY_ANON_TOKEN : undefined);
   }
   if (authType === 'basic') {
     result.username = (await getSecureItem(credKey(profile.id, 'basic_username'))) ?? profile.username ?? undefined;

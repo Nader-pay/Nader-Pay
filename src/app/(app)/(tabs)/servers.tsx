@@ -3,7 +3,7 @@ import { ActivityIndicator, FlatList, Pressable, Text, View } from 'react-native
 import { useFocusEffect, useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Check, Plus, Server, Trash2, RefreshCw } from 'lucide-react-native';
+import { Check, Plus, Server, Trash2, RefreshCw, Edit2 } from 'lucide-react-native';
 
 import {
   AlertDialog,
@@ -157,11 +157,17 @@ export default function ServersScreen() {
                   <Text className="text-sm font-medium text-foreground">اختبار</Text>
                 </Pressable>
                 <Pressable
-                  className="flex-1 flex-row items-center justify-center gap-2 py-2 border border-destructive rounded-xl active:opacity-70"
+                  className="flex-1 flex-row items-center justify-center gap-2 py-2 border border-border rounded-xl active:opacity-70"
+                  onPress={() => router.push(`/server-profile/${item.id}` as any)}
+                >
+                  <Edit2 size={16} className="text-foreground" />
+                  <Text className="text-sm font-medium text-foreground">تعديل</Text>
+                </Pressable>
+                <Pressable
+                  className="p-2 border border-destructive rounded-xl items-center justify-center active:opacity-70"
                   onPress={() => setDeleteDialog({ id: item.id, name: item.name })}
                 >
                   <Trash2 size={16} className="text-destructive" />
-                  <Text className="text-sm font-medium text-destructive">حذف</Text>
                 </Pressable>
               </View>
             </View>
