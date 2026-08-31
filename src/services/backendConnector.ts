@@ -145,20 +145,34 @@ export async function sendBackendRequest(
 
     let requestPayload: unknown;
     if (isBackendProxyV2) {
-      // للـ backend-proxy v2: نحول دائماً إلى { path, method, body }
-      // نستخرج الـ path النسبي من الـ URL سواء كان يحتوي على baseUrl أو لا
-      let path: string;
+      // backend-proxy هو reverse-proxy عادي يتوقع: { url, method, headers, body, query }
+      // حيث url = الرابط الكامل للـ Supabase Edge Function المستهدفة
+      // نستخرج Supabase base (بدون /functions/v1/backend-proxy) ثم نضيف المسار الصحيح
+      const supabaseBase = baseUrl.replace(/\/functions\/v1\/backend-proxy$/i, '');
+
+      // نستخرج المسار من الـ url الذي يصلنا (قد يكون كاملاً أو نسبياً)
+      let targetPath: string;
       if (url.startsWith(baseUrl)) {
-        path = url.slice(baseUrl.length).replace(/^\/+/, '');
+        // url فيه baseUrl مضافاً — نستخرج المسار النسبي
+        targetPath = url.slice(baseUrl.length).replace(/^\/+/, '');
+      } else if (url.startsWith('http')) {
+        // url كامل لخادم آخر — نُرسله مباشرة
+        targetPath = '';
       } else {
-        // المسار نسبي مسبقاً أو مختلف — نستخدمه مباشرة
-        path = url.replace(/^\/+/, '');
+        targetPath = url.replace(/^\/+/, '');
       }
+
+      // نبني الـ upstream URL الكامل
+      const upstreamUrl = targetPath
+        ? `${supabaseBase}/functions/v1/${targetPath}`
+        : url;
+
       const queryString = new URLSearchParams(query as Record<string, string>).toString();
-      if (queryString) {
-        path = path.includes('?') ? `${path}&${queryString}` : `${path}?${queryString}`;
-      }
-      requestPayload = { path, method, body };
+      const finalUrl = queryString
+        ? (upstreamUrl.includes('?') ? `${upstreamUrl}&${queryString}` : `${upstreamUrl}?${queryString}`)
+        : upstreamUrl;
+
+      requestPayload = { url: finalUrl, method, headers: { ...authHeaders, ...extraHeaders }, body };
     } else {
       // في الوضع المباشر أو الـ backend-proxy v1
       requestPayload = { url, method, headers: upstreamHeaders, body, query };
@@ -279,7 +293,7 @@ export async function testConnection(profile: ServerProfile): Promise<Connection
           'x-request-id': requestId,
           ...authHeaders,
         },
-        body: JSON.stringify({ path: 'config', method: 'GET' }),
+        body: JSON.stringify({ action: 'health' }),
       });
 
       const text = await res.text();
@@ -405,13 +419,21 @@ export async function postOrderAction(
 
 export async function registerDeviceWithBackend(
   profile: ServerProfile,
-  deviceInfo: { deviceName: string; platform: string; appVersion: string; androidVersion: string; installationId?: string }
+  deviceInfo: { deviceName: string; platform: string; appVersion: string; androidVersion: string; installationId?: string; userJwt?: string }
 ): Promise<{ ok: boolean; deviceId?: string; deviceToken?: string; error?: string }> {
   const endpoint = profile.apiContract
     ? resolveEndpoint(profile.apiContract, 'deviceRegister')
-    : buildAbsoluteUrl(profile.baseUrl, '/device/register');
+    : buildAbsoluteUrl(profile.baseUrl, '/functions/v1/device-api/register-with-auth');
   if (!endpoint) {
     return { ok: false, error: 'Device register endpoint not configured' };
+  }
+
+  // device-api/register-with-auth يتطلب user JWT في Authorization header
+  // نُمرره كـ extraHeaders ليصل عبر backend-proxy للـ upstream
+  const extraHeaders: Record<string, string> = {};
+  if (deviceInfo.userJwt) {
+    extraHeaders['Authorization'] = `Bearer ${deviceInfo.userJwt}`;
+    extraHeaders['apikey'] = deviceInfo.userJwt;
   }
 
   const result = await sendBackendRequest(profile, {
@@ -424,6 +446,7 @@ export async function registerDeviceWithBackend(
       android_version: deviceInfo.androidVersion,
       installation_id: deviceInfo.installationId,
     },
+    extraHeaders,
   });
 
   if (!result.ok) {
