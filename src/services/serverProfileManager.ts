@@ -177,7 +177,7 @@ export async function saveServerProfile(profile: ServerProfile): Promise<void> {
     baseUrl: normalized,
     authType: profile.authType,
     apiKey: profile.authType === 'api_key' ? profile.apiKey : null,
-    token: profile.authType === 'bearer' ? profile.token : null,
+    token: profile.token ?? null,
     username: profile.authType === 'basic' ? profile.username : null,
     password: profile.authType === 'basic' ? profile.password : null,
     customHeaders: serializeCustomHeaders(profile.customHeaders),
