@@ -104,8 +104,8 @@ jobs:
       - name: Read app version
         id: version
         run: |
-          VERSION=$(node -p "require('./app.json').version")
-          VERSION_CODE=$(node -p "require('./app.json').android.versionCode")
+          VERSION=$(node -p "require('./app.json').expo.version")
+          VERSION_CODE=$(node -p "require('./app.json').expo.android.versionCode")
           echo "APP_VERSION=$VERSION" >> "$GITHUB_ENV"
           echo "APP_VERSION_CODE=$VERSION_CODE" >> "$GITHUB_ENV"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
