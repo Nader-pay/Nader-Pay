@@ -20,6 +20,14 @@ export async function registerDevice(): Promise<RegisterDeviceResult> {
     return { success: false, error: 'لم يتم تكوين خادم نشط' };
   }
 
+  // نحضر user JWT من جلسة Supabase — device-api/register-with-auth يتطلبه
+  let userJwt: string | null = null;
+  try {
+    const { supabase } = await import('@/client/supabase');
+    const { data: { session } } = await supabase.auth.getSession();
+    userJwt = session?.access_token ?? null;
+  } catch { /* نتجاهل أخطاء جلب الجلسة */ }
+
   const deviceName = [Device.deviceName, Device.brand, Device.modelName]
     .filter(Boolean)
     .join(' - ') || 'NaderPay Agent';
@@ -31,6 +39,7 @@ export async function registerDevice(): Promise<RegisterDeviceResult> {
       appVersion: process.env.EXPO_PUBLIC_APP_VERSION ?? '2.0.0',
       androidVersion: String(Device.osVersion ?? ''),
       installationId: Device.osBuildFingerprint ?? undefined,
+      userJwt: userJwt ?? undefined,
     });
 
     if (!result.ok) {

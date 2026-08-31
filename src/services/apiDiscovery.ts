@@ -66,8 +66,10 @@ function buildBackendProxyV2Contract(baseUrl: string): BackendApiContract {
       confirm: '/orders/{id}/confirm',
       reject: '/orders/{id}/reject',
       duplicate: '/orders/{id}/duplicate',
-      deviceRegister: '/device/register',
-      heartbeat: '/device/{id}/heartbeat',
+      // device-api هي Supabase Edge Function منفصلة — المسار يبدأ بـ device-api/
+      // register-with-auth يستخدم Supabase JWT (جلسة المستخدم) وليس API key
+      deviceRegister: 'device-api/register-with-auth',
+      heartbeat: 'device-api/{id}/heartbeat',
     },
     auth: { type: 'bearer', in: 'header', prefix: 'Bearer' },
   };
