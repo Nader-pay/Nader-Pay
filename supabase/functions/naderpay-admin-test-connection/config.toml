@@ -1,0 +1,2 @@
+[functions.naderpay-admin-test-connection]
+verify_jwt = false
