@@ -360,7 +360,7 @@ export const dbReady = SQLite.openDatabaseAsync(DB_NAME, DB_OPTIONS)
     );
     await db.runAsync(
       `INSERT INTO agent_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
-      ['activeServerProfileId', defaultId]
+      ['active_server_profile_id', defaultId]
     );
   }
 

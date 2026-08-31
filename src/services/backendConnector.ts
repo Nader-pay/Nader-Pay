@@ -56,9 +56,12 @@ function humanizeBackendError(body: unknown, status: number): string | undefined
 }
 
 let lastRequestMeta: BackendRequestMeta | null = null;
+// lastConnectionTestMeta: يُحدَّث فقط من testConnection ولا يُلوَّث بطلبات البيزنس
+let lastConnectionTestMeta: BackendRequestMeta | null = null;
 
 export function getLastBackendRequestMeta(): BackendRequestMeta | null {
-  return lastRequestMeta;
+  // نُعيد meta آخر اختبار اتصال فعلي حتى لا تلوّثه طلبات device/register أو orders
+  return lastConnectionTestMeta ?? lastRequestMeta;
 }
 
 export const DEFAULT_NADERPAY_SERVER_URL = 'https://ccimllgqdxuvymdeikmn.supabase.co/functions/v1/backend-proxy';
@@ -141,9 +144,16 @@ export async function sendBackendRequest(
     const upstreamHeaders = isBackendProxyV2 ? authHeaders : { ...authHeaders, ...extraHeaders };
 
     let requestPayload: unknown;
-    if (isBackendProxyV2 && url.startsWith(baseUrl)) {
-      // نحول الرابط المطلق إلى مسار نسبي لـ mobile-topup
-      let path = url.slice(baseUrl.length).replace(/^\/+/, '');
+    if (isBackendProxyV2) {
+      // للـ backend-proxy v2: نحول دائماً إلى { path, method, body }
+      // نستخرج الـ path النسبي من الـ URL سواء كان يحتوي على baseUrl أو لا
+      let path: string;
+      if (url.startsWith(baseUrl)) {
+        path = url.slice(baseUrl.length).replace(/^\/+/, '');
+      } else {
+        // المسار نسبي مسبقاً أو مختلف — نستخدمه مباشرة
+        path = url.replace(/^\/+/, '');
+      }
       const queryString = new URLSearchParams(query as Record<string, string>).toString();
       if (queryString) {
         path = path.includes('?') ? `${path}&${queryString}` : `${path}?${queryString}`;
@@ -276,12 +286,15 @@ export async function testConnection(profile: ServerProfile): Promise<Connection
       let data: unknown = null;
       try { data = JSON.parse(text); } catch { data = text; }
 
-      lastRequestMeta = {
+      const updatedMeta: BackendRequestMeta = {
         ...lastRequestMeta,
         responseStatus: res.status,
         responseBody: data,
         finishedAt: new Date().toISOString(),
       };
+      lastRequestMeta = updatedMeta;
+      // حفظ نتيجة اختبار الاتصال منفصلة — لا تُلوَّث بطلبات البيزنس اللاحقة
+      lastConnectionTestMeta = updatedMeta;
 
       if (res.ok) {
         // أي رد 2xx = اتصال ومصادقة ناجحة
@@ -306,11 +319,13 @@ export async function testConnection(profile: ServerProfile): Promise<Connection
         authOk: res.status !== 401 && res.status !== 403,
       };
     } catch (err) {
-      lastRequestMeta = {
+      const errMeta: BackendRequestMeta = {
         ...lastRequestMeta,
         finishedAt: new Date().toISOString(),
         error: err instanceof Error ? err.message : 'Connection failed',
       };
+      lastRequestMeta = errMeta;
+      lastConnectionTestMeta = errMeta;
       return {
         ok: false,
         endpoint: baseUrl,

@@ -66,6 +66,8 @@ function buildBackendProxyV2Contract(baseUrl: string): BackendApiContract {
       confirm: '/orders/{id}/confirm',
       reject: '/orders/{id}/reject',
       duplicate: '/orders/{id}/duplicate',
+      deviceRegister: '/device/register',
+      heartbeat: '/device/{id}/heartbeat',
     },
     auth: { type: 'bearer', in: 'header', prefix: 'Bearer' },
   };
