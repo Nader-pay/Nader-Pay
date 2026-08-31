@@ -34,6 +34,10 @@ function humanizeBackendError(body: unknown, status: number): string | undefined
   const message = errorJson?.message || errorText;
 
   if (status === 401 || status === 403) {
+    // "Path not allowed" من backend-proxy ليس فشل مصادقة — بل قيد على المسار
+    if (errorText.includes('Path not allowed') || errorText.includes('path not allowed')) {
+      return `مسار مرفوض من الخادم (${status})`;
+    }
     return 'فشل المصادقة: المفتاح غير صالح أو ليس لديك صلاحيات كافية';
   }
   if (code === 'NOT_FOUND' || message.includes('NOT_FOUND') || message.includes('was not found') || message.includes('لا يوجد')) {
@@ -310,8 +314,16 @@ export async function testConnection(profile: ServerProfile): Promise<Connection
       // حفظ نتيجة اختبار الاتصال منفصلة — لا تُلوَّث بطلبات البيزنس اللاحقة
       lastConnectionTestMeta = updatedMeta;
 
-      if (res.ok) {
-        // أي رد 2xx = اتصال ومصادقة ناجحة
+      // أي رد من الخادم (حتى 4xx) يعني الاتصال يعمل والـ token وصل
+      // "Path not allowed" أو "Missing or invalid url" = الخادم يعمل لكن health check مرفوض
+      const bodyStr = typeof data === 'string' ? data : JSON.stringify(data ?? '');
+      const isProxyReachable =
+        res.ok ||
+        bodyStr.includes('Path not allowed') ||
+        bodyStr.includes('Missing or invalid url') ||
+        bodyStr.includes('Invalid payload');
+
+      if (isProxyReachable) {
         return {
           ok: true,
           status: res.status,
@@ -323,14 +335,14 @@ export async function testConnection(profile: ServerProfile): Promise<Connection
         };
       }
 
-      // رد غير 2xx = خطأ
+      // 401/403 حقيقي = فشل مصادقة
       return {
         ok: false,
         error: humanizeBackendError(data, res.status) || `HTTP ${res.status}`,
         endpoint: baseUrl,
         method: 'POST',
         requestId,
-        authOk: res.status !== 401 && res.status !== 403,
+        authOk: false,
       };
     } catch (err) {
       const errMeta: BackendRequestMeta = {
