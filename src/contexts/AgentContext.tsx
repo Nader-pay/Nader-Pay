@@ -1143,18 +1143,22 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
         await registerBackgroundSync();
       }
 
-      // Startup recovery: جلب الطلبات + مصالحة SMS + مزامنة queue
-      if (loadedSettings.enabled && loadedDevice.deviceId) {
-        try {
-          await onStartupRecovery(loadedDevice);
-          // تحديث الطلبات المحلية بعد الاسترداد
-          const cached = await getCachedOrders();
-          if (active && cached.length > 0) {
-            // سيتم تحديث pendingOrders عبر refreshOrders التي ستُستدعى بواسطة realtime useEffect
-          }
-        } catch (e) {
-          await logEvent('startup_recovery_warn', e instanceof Error ? e.message : 'startup_recovery_failed');
-        }
+      // FIX RC#5: Startup Recovery يُشغَّل دائماً لاستعادة الخادم،
+      // بغض النظر عن enabled أو deviceId.
+      // استعادة الخادم يتم في dbReady (self-healing migration).
+      // هنا نُشغّل مزامنة البيانات فقط إذا كان الوكيل مفعّلاً.
+      try {
+        await onStartupRecovery(loadedDevice);
+      } catch (e) {
+        await logEvent('startup_recovery_warn', e instanceof Error ? e.message : 'startup_recovery_failed');
+      }
+
+      // FIX RC#4: إعادة تحميل الإعدادات بعد startup recovery
+      // لأن dbReady قد استعاد active_server_profile_id الذي كان غائباً.
+      const finalSettings = await loadSettings();
+      if (!active) return;
+      if (finalSettings.activeServerProfileId !== loadedSettings.activeServerProfileId) {
+        setSettings(finalSettings);
       }
 
       setInitDone(true);

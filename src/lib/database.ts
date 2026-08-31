@@ -505,8 +505,11 @@ export const dbReady = SQLite.openDatabaseAsync(DB_NAME, DB_OPTIONS)
   }
 
   // Seed & Update: التأكد من وجود الخادم الافتراضي ببيانات الاتصال الصحيحة دائماً
-  // نستخدم backend-proxy الخاص بمشروع التطبيق (hbldhnpduoczneoyfzyz)
-  // لأن backend-proxy الخارجي (ccimllgqdxuvymdeikmn) له whitelist يمنع device-api
+  // ─── FIX RC#1: Server Configuration Self-Healing ───────────────────────────
+  // سبب الـ Regression: الـ UPDATE السابق كان يُطابق كل خادم يحتوي 'backend-proxy'
+  // في base_url مما يُغيّر بيانات الخوادم الحقيقية التي أضافها المستخدم.
+  // الإصلاح: نُحدّث فقط الخادم المعروف بـ id محدد أو URL القديم (ccimllgqdxuvymdeikmn).
+  // لا نلمس الخوادم الأخرى التي أضافها المستخدم.
   const defaultId = 'default-nader-pay-server';
   const appSupabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL || 'https://hbldhnpduoczneoyfzyz.supabase.co';
   const appAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImhibGRobnBkdW9jem5lb3lmenl6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODc3MzM2NzksImV4cCI6MjEwMzMwOTY3OX0.uT0Oy_AYcMIQe1VNrWLTnPCSiE141MntZbp3IgFLpxE';
@@ -514,15 +517,16 @@ export const dbReady = SQLite.openDatabaseAsync(DB_NAME, DB_OPTIONS)
   const defaultToken = appAnonKey;
   const now = new Date().toISOString();
 
-  // 1. تحديث أي خادم قديم — يُحوّل URL القديم (ccimllgqdxuvymdeikmn) للـ URL الصحيح
+  // 1. تحديث الخادم القديم المعروف بـ URL القديم (ccimllgqdxuvymdeikmn) فقط
+  //    SAFE: لا يُطابق إلا الخادم الذي نعرفه بالاسم — لا يلمس الخوادم الأخرى
   await db.runAsync(
     `UPDATE server_profiles
      SET token = ?, auth_type = 'bearer', base_url = ?, updated_at = ?
-     WHERE base_url LIKE '%ccimllgqdxuvymdeikmn%' OR base_url LIKE '%backend-proxy%' OR id = ?`,
+     WHERE base_url LIKE '%ccimllgqdxuvymdeikmn%' OR id = ?`,
     [defaultToken, defaultUrl, now, defaultId]
   );
 
-  // 2. إذا لم يكن هناك أي خادم، نقوم بإدراجه وتنشيطه
+  // 2. إذا لم يكن هناك أي خادم، نُدرج الخادم الافتراضي ونُنشّطه
   const existingProfiles = await db.getAllAsync<{ id: string }>(
     "SELECT id FROM server_profiles LIMIT 1"
   );
@@ -531,21 +535,51 @@ export const dbReady = SQLite.openDatabaseAsync(DB_NAME, DB_OPTIONS)
       `INSERT OR REPLACE INTO server_profiles
         (id, name, base_url, auth_type, token, discovery_url, is_active, is_connected, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, 1, 0, ?, ?)`,
-      [
-        defaultId,
-        'Nader Pay',
-        defaultUrl,
-        'bearer',
-        defaultToken,
-        null,
-        now,
-        now,
-      ]
+      [defaultId, 'Nader Pay', defaultUrl, 'bearer', defaultToken, null, now, now]
     );
     await db.runAsync(
       `INSERT INTO agent_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
       ['active_server_profile_id', defaultId]
     );
+  }
+
+  // 3. FIX RC#1 self-healing: إذا لا يوجد خادم نشط (is_active=1) رغم وجود خوادم،
+  //    نُنشّط أوّل خادم متاح ونُحدّث active_server_profile_id في agent_settings.
+  //    هذا يُستعيد الخادم المحفوظ بعد أي regression يُصفّر is_active.
+  const activeProfile = await db.getAllAsync<{ id: string }>(
+    "SELECT id FROM server_profiles WHERE is_active = 1 LIMIT 1"
+  );
+  if (activeProfile.length === 0) {
+    const firstProfile = await db.getAllAsync<{ id: string }>(
+      "SELECT id FROM server_profiles ORDER BY updated_at DESC LIMIT 1"
+    );
+    if (firstProfile.length > 0) {
+      const restoredId = firstProfile[0].id;
+      await db.runAsync('UPDATE server_profiles SET is_active = 1 WHERE id = ?', [restoredId]);
+      await db.runAsync(
+        `INSERT INTO agent_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+        ['active_server_profile_id', restoredId]
+      );
+      console.info('[database] ♻️ تم استعادة الخادم المحفوظ تلقائياً:', restoredId);
+    }
+  }
+
+  // 4. إذا كان active_server_profile_id فارغاً أو غير موجود لكن is_active=1 موجود،
+  //    نُحدّث agent_settings لمطابقة الواقع الفعلي.
+  const activeSettingRow = await db.getAllAsync<{ value: string }>(
+    "SELECT value FROM agent_settings WHERE key = 'active_server_profile_id' LIMIT 1"
+  );
+  const activeSetting = activeSettingRow[0]?.value ?? '';
+  if (!activeSetting) {
+    const activeRow = await db.getAllAsync<{ id: string }>(
+      "SELECT id FROM server_profiles WHERE is_active = 1 LIMIT 1"
+    );
+    if (activeRow.length > 0) {
+      await db.runAsync(
+        `INSERT INTO agent_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+        ['active_server_profile_id', activeRow[0].id]
+      );
+    }
   }
 
   return db;

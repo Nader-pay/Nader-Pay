@@ -54,7 +54,23 @@ export function detectDeviceIdentityFromResponse(
   if (text.includes('DEVICE_REVOKED')) return 'REVOKED';
   if (text.includes('DEVICE_BLOCKED')) return 'BLOCKED';
   if (text.includes('VERSION_BLOCKED')) return 'VERSION_BLOCKED';
-  if (status === 401 || status === 403) return 'AUTH_EXPIRED';
+
+  // FIX RC#2: لا نُعامل كل 401/403 كـ AUTH_EXPIRED.
+  // 403 من backend-proxy (مثل "Path not allowed") خطأ عادي وليس انتهاء جلسة.
+  // نُعيد AUTH_EXPIRED فقط إذا كانت رسائل الخادم تُشير صراحةً لانتهاء المصادقة.
+  if (status === 401 || status === 403) {
+    // إشارات صريحة لانتهاء المصادقة من الخادم
+    const isAuthExpiry =
+      text.includes('AUTH_EXPIRED') ||
+      text.includes('token expired') ||
+      text.includes('jwt expired') ||
+      text.includes('session expired') ||
+      text.includes('Invalid JWT') ||
+      text.includes('invalid_grant') ||
+      (status === 401 && !text.includes('Path not allowed') && !text.includes('path not allowed'));
+    if (isAuthExpiry) return 'AUTH_EXPIRED';
+    // 403 بدون إشارة صريحة = خطأ صلاحيات/مسار عادي — لا نُغيّر حالة الجهاز
+  }
   return null;
 }
 

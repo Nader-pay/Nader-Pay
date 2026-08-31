@@ -241,8 +241,16 @@ export async function onStartupRecovery(deviceState?: DeviceState): Promise<Reco
     stepsCompleted = 3;
     const online = await checkNetworkOnline();
 
-    if (!online || !settings.enabled) {
-      await logEvent('startup_recovery_offline', 'غير متصل أو معطل — تحميل محلي فقط');
+    // FIX RC#4: استعادة الخادم تحدث دائماً بغض النظر عن enabled أو الشبكة.
+    // يكفي أن dbReady قد أجرى self-healing — نُسجّل فقط.
+    if (!online) {
+      await logEvent('startup_recovery_offline', 'غير متصل — تحميل محلي فقط');
+      return { success: true, stepsCompleted: 3, stepsTotal: TOTAL_STEPS };
+    }
+
+    if (!settings.enabled) {
+      // الوكيل معطّل — الخادم محفوظ ومُستعاد من DB، لكن لا نُشغّل مزامنة.
+      await logEvent('startup_recovery_disabled', 'الوكيل معطّل — الخادم محفوظ، لا مزامنة');
       return { success: true, stepsCompleted: 3, stepsTotal: TOTAL_STEPS };
     }
 
