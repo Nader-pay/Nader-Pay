@@ -5,7 +5,8 @@ import type {
   BackendRequestMeta,
 } from '@/types/backend';
 import { resolveEndpoint, buildAbsoluteUrl } from './apiDiscovery';
-import { withCircuitBreaker, backendCircuit } from '@/services/circuitBreaker';
+// Circuit breaker — مُستورد لحماية الطلبات عند الحاجة
+import { backendCircuit } from '@/services/circuitBreaker';
 import {
   detectDeviceIdentityFromResponse,
   setDeviceIdentityState,
