@@ -264,3 +264,68 @@ export function pruneInMemoryDedup(): void {
     if (ts < cutoff) inMemoryDedup.delete(key);
   }
 }
+
+// ────────────────────────────────────────────────
+// Health Score حقيقي (يُكمّل supervisorEngine)
+// ────────────────────────────────────────────────
+
+/**
+ * يُحسَب Health Score من healthMap الداخلي.
+ * HEALTHY=100, DEGRADED=50, ERROR/UNKNOWN=0
+ * Critical modules (database, network, runtime) بوزن مضاعف.
+ */
+const CRITICAL_MODULES: ModuleName[] = ['database', 'network', 'runtime'];
+
+export function computeHealthScoreFromMap(): number {
+  const entries = Object.entries(healthMap) as [ModuleName, ModuleHealth][];
+  if (entries.length === 0) return 0;
+
+  let totalWeight = 0;
+  let earnedWeight = 0;
+
+  for (const [name, health] of entries) {
+    const weight = CRITICAL_MODULES.includes(name) ? 2 : 1;
+    totalWeight += weight;
+    if (health.status === 'HEALTHY') earnedWeight += weight;
+    else if (health.status === 'DEGRADED') earnedWeight += weight * 0.5;
+    // ERROR / UNKNOWN = 0
+  }
+
+  return totalWeight === 0 ? 0 : Math.round((earnedWeight / totalWeight) * 100);
+}
+
+/**
+ * نص قابل للعرض في UI يصف الحالة الكاملة للنظام.
+ */
+export function getSystemHealthLabel(): string {
+  const score = computeHealthScoreFromMap();
+  if (score >= 85) return `سليم (${score}%)`;
+  if (score >= 60) return `مخفّض (${score}%)`;
+  if (score >= 30) return `ضعيف (${score}%)`;
+  return `حرج (${score}%)`;
+}
+
+// ────────────────────────────────────────────────
+// Structured Audit Trail (ring buffer in memory + DB)
+// ────────────────────────────────────────────────
+
+export type AuditEntry = {
+  ts: string;
+  action: string;
+  orderId: string | null;
+  module: ModuleName | null;
+  result: 'ok' | 'fail' | 'warn';
+  detail: string;
+};
+
+const _auditBuffer: AuditEntry[] = [];
+const MAX_AUDIT_BUFFER = 200;
+
+export function recordAuditEntry(entry: AuditEntry): void {
+  _auditBuffer.unshift(entry);
+  if (_auditBuffer.length > MAX_AUDIT_BUFFER) _auditBuffer.length = MAX_AUDIT_BUFFER;
+}
+
+export function getAuditTrail(limit = 50): AuditEntry[] {
+  return _auditBuffer.slice(0, limit);
+}

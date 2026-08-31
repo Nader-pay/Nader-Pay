@@ -152,6 +152,13 @@ export type AgentDiagnosticState = {
   /** حالة Runtime الموحدة — مستقلة عن backendStatus و realtimeStatus */
   runtimeStatus?: 'DISABLED' | 'STARTING' | 'RUNNING' | 'DEGRADED' | 'RECONNECTING' | 'ERROR' | 'OFFLINE';
   runtimeReason?: string | null;
+  /** Phase 3: Supervisor + Security + Observability */
+  healthScore?: number;
+  supervisorStatus?: 'HEALTHY' | 'DEGRADED' | 'BLOCKED' | 'ERROR';
+  deadLetterCount?: number;
+  networkState?: 'ONLINE' | 'UNSTABLE' | 'OFFLINE' | 'BACKEND_UNREACHABLE' | 'AUTH_FAILURE' | 'REALTIME_DISCONNECTED' | 'RECOVERING';
+  deviceIdentityState?: 'ACTIVE' | 'REVOKED' | 'BLOCKED' | 'VERSION_BLOCKED' | 'AUTH_EXPIRED' | 'UNKNOWN';
+  circuitBreakerState?: 'CLOSED' | 'OPEN' | 'HALF_OPEN';
 };
 
 export type AgentState = {

@@ -2,6 +2,9 @@ import { supabase } from '@/client/supabase';
 import { getActiveServerProfile } from '@/services/serverProfileManager';
 import { runSyncEngine } from '@/services/syncEngine';
 import { loadDeviceState } from '@/services/agentSettings';
+import { realtimeCircuit } from '@/services/circuitBreaker';
+import { recordHeartbeat, recordModuleFailure } from '@/services/supervisorEngine';
+import { updateRealtimeState } from '@/services/networkIntelligence';
 import type { AgentOrderStatus } from '@/types/agent';
 
 const STATUS_MAP: Record<string, AgentOrderStatus> = {
@@ -58,10 +61,18 @@ function reconnectDelay(): number {
 async function poll() {
   if (isStopped) return;
   try {
+    // Phase 3: Circuit Breaker guard قبل كل polling
+    if (!realtimeCircuit.canRequest()) {
+      return; // الدائرة مفتوحة — لا ترسل طلبات
+    }
     await runSyncEngine(await loadDeviceState());
+    realtimeCircuit.recordSuccess();
+    recordHeartbeat('realtime');
     syncCallback?.();
-  } catch {
-    // تجاهل أخطاء polling — لا نغيّر الـ status
+  } catch (err) {
+    realtimeCircuit.recordFailure();
+    recordModuleFailure('realtime', err instanceof Error ? err.message : 'poll_error', { shouldRestart: false });
+    // لا نغيّر الـ status — تجاهل أخطاء polling
   }
 }
 
@@ -160,10 +171,16 @@ async function subscribeToRealtime() {
       if (status === 'SUBSCRIBED') {
         retryAttempt = 0;
         setStatus('connected');
+        // Phase 3: تحديث NetworkIntelligence + Supervisor عند نجاح الاتصال
+        updateRealtimeState(true);
+        recordHeartbeat('realtime');
         // مزامنة فورية بعد الاتصال لاستدراك أي events فاتت
         setTimeout(() => { if (!isStopped) poll().catch(() => undefined); }, 500);
       } else if (status === 'CLOSED' || status === 'CHANNEL_ERROR') {
         setStatus('error');
+        // Phase 3: تحديث NetworkIntelligence + سجّل الفشل في Supervisor
+        updateRealtimeState(false);
+        recordModuleFailure('realtime', status, { shouldRestart: false });
         if (currentChannel) {
           try { supabase.removeChannel(currentChannel); } catch { /* تجاهل */ }
           currentChannel = null;
@@ -176,6 +193,8 @@ async function subscribeToRealtime() {
         }
       } else if (err) {
         setStatus('error');
+        updateRealtimeState(false);
+        recordModuleFailure('realtime', err instanceof Error ? err.message : 'subscribe_error', { shouldRestart: false });
         if (retryAttempt < MAX_RETRIES) {
           scheduleReconnect();
         } else {

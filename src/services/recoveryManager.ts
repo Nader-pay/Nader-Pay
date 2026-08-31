@@ -18,11 +18,14 @@
  * 13. إعلام المستخدم بنتيجة الاسترداد
  */
 
-import { logEvent, setOrderTimestamp } from '@/lib/database';
+import { logEvent, setOrderTimestamp, getInFlightOrders, clearOrderInFlight, addToDeadLetter, getSyncCursor, setSyncCursor, getDeadLetterCount } from '@/lib/database';
 import { runSyncEngine, fetchPendingOrders, reconcileLocalEvents, checkNetworkOnline } from '@/services/syncEngine';
 import { reconnectRealtime } from '@/services/realtimeSync';
 import { resumeRuntime } from '@/services/agentRuntime';
 import { loadSettings, loadDeviceState } from '@/services/agentSettings';
+import { assessNetworkState, getNetworkState } from '@/services/networkIntelligence';
+import { getSupervisorSnapshot, runHealthCycle, recordHeartbeat } from '@/services/supervisorEngine';
+import { setDatabaseStatus, setSyncStatus, computeSyncStatus } from '@/services/diagnosticsEngine';
 import type { DeviceState } from '@/types/agent';
 
 export type RecoveryResult = {
@@ -70,6 +73,8 @@ export async function onNetworkRestored(opts: RecoveryOptions = {}): Promise<Rec
 
   try {
     await logEvent('recovery_start', 'بدء تسلسل الاسترداد بعد استعادة الشبكة');
+    // Phase 3: تقييم شامل للشبكة (ليس فقط device-level)
+    await assessNetworkState({ skipBackendProbe: false });
 
     // ── الخطوة 1: التحقق من الشبكة ──
     step(1, 'التحقق من حالة الشبكة');
@@ -166,9 +171,26 @@ export async function onNetworkRestored(opts: RecoveryOptions = {}): Promise<Rec
       await logEvent('recovery_retry_reschedule_warn', err instanceof Error ? err.message : 'unknown');
     }
 
-    // ── الخطوة 12: تحديث Diagnostics ──
+    // ── الخطوة 12: تحديث Diagnostics + Supervisor Health Cycle ──
     step(12, 'تحديث حالة Diagnostics');
-    await logEvent('recovery_diagnostics', 'تحديث diagnostics مكتمل');
+    try {
+      await runHealthCycle();
+      const supervisorSnap = getSupervisorSnapshot();
+      const dlqCount = await getDeadLetterCount();
+      const remaining2 = await (async () => {
+        const { getPendingOfflineQueue } = await import('@/lib/database');
+        return (await getPendingOfflineQueue()).length;
+      })();
+      setSyncStatus(computeSyncStatus(remaining2, false, (syncResult?.failed ?? 0) > 0));
+      recordHeartbeat('runtime');
+      await logEvent('recovery_diagnostics', 'تحديث diagnostics مكتمل', {
+        healthScore: supervisorSnap.healthScore,
+        overallStatus: supervisorSnap.overallStatus,
+        deadLetterCount: dlqCount,
+      });
+    } catch (err) {
+      await logEvent('recovery_diagnostics_warn', err instanceof Error ? err.message : 'unknown');
+    }
 
     // ── الخطوة 13: إشعار المستخدم ──
     step(13, 'إشعار المستخدم');

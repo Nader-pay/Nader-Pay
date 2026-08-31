@@ -38,6 +38,11 @@ import { buildStatusSnapshot } from '@/services/statusEngine';
 import { listProviderSources } from '@/services/providerSourceService';
 import { onNetworkRestored, onStartupRecovery } from '@/services/recoveryManager';
 import { logDiagnosticEvent, markModuleHealthy, markModuleError, computeSyncStatus } from '@/services/diagnosticsEngine';
+import { getSupervisorSnapshot, runHealthCycle, recordHeartbeat as supervisorHeartbeat } from '@/services/supervisorEngine';
+import { getNetworkSnapshot, getNetworkState } from '@/services/networkIntelligence';
+import { getDeviceIdentityState } from '@/services/securityGuard';
+import { backendCircuit } from '@/services/circuitBreaker';
+import { getDeadLetterCount } from '@/lib/database';
 import {
   cacheOrders,
   getCachedOrders,
@@ -288,6 +293,16 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
       const background = settings.backgroundSyncEnabled;
       const providerSources = await listProviderSources();
       const verifiedCount = providerSources.filter((s) => s.verified && s.status === 'verified').length;
+
+      // Phase 3: جلب بيانات Supervisor + Network + Security + Circuit Breaker
+      const [supervisorSnap, networkSnap, dlqCount] = await Promise.all([
+        Promise.resolve(getSupervisorSnapshot()),
+        Promise.resolve(getNetworkSnapshot()),
+        getDeadLetterCount().catch(() => 0),
+      ]);
+      const deviceIdentity = getDeviceIdentityState();
+      const cbSnap = backendCircuit.getSnapshot();
+
       const snapshot = buildStatusSnapshot(
         {
           settings,
@@ -304,6 +319,7 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
         },
         stateRef.current.diagnostics
       );
+
       setState((s) => ({
         ...s,
         connectionStatus: snapshot.connectionStatus,
@@ -328,8 +344,20 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
           lastBackendError: backendMeta?.error || null,
           realtimeStatus: snapshot.realtimeStatus,
           verifiedProviderSources: verifiedCount,
+          // Phase 3: بيانات المرحلة الجديدة
+          healthScore: supervisorSnap.healthScore,
+          supervisorStatus: supervisorSnap.overallStatus,
+          deadLetterCount: dlqCount,
+          networkState: networkSnap.networkState,
+          deviceIdentityState: deviceIdentity,
+          circuitBreakerState: cbSnap.state,
         },
       }));
+
+      // Phase 3: تشغيل health cycle كجزء من diagnostics الدورية
+      runHealthCycle().catch(() => undefined);
+      supervisorHeartbeat('runtime');
+
     } catch (err) {
       setState((s) => ({
         ...s,

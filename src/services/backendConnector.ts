@@ -5,6 +5,15 @@ import type {
   BackendRequestMeta,
 } from '@/types/backend';
 import { resolveEndpoint, buildAbsoluteUrl } from './apiDiscovery';
+import { withCircuitBreaker, backendCircuit } from '@/services/circuitBreaker';
+import {
+  detectDeviceIdentityFromResponse,
+  setDeviceIdentityState,
+  handleDeviceRevocation,
+  handleAuthExpiry,
+  buildSecurityHeaders,
+  scrubSensitiveData,
+} from '@/services/securityGuard';
 
 /** توليد UUID آمن متوافق مع Hermes (React Native) */
 function generateUUID(): string {
@@ -46,6 +55,17 @@ function humanizeBackendError(body: unknown, status: number): string | undefined
   if (status === 503) {
     return 'الخدمة معطلة حاليًا من الخادم';
   }
+  // Phase 3 — تحديث Device Identity State من استجابة الخادم
+  const identityState = detectDeviceIdentityFromResponse(status, body);
+  if (identityState) {
+    setDeviceIdentityState(identityState, errorText);
+    if (identityState === 'REVOKED') {
+      handleDeviceRevocation(errorText).catch(() => undefined);
+    } else if (identityState === 'AUTH_EXPIRED') {
+      handleAuthExpiry().catch(() => undefined);
+    }
+  }
+
   if (code === 'DEVICE_REVOKED') {
     return 'هذا الجهاز ملغى';
   }

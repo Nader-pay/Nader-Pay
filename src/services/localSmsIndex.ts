@@ -76,8 +76,9 @@ export async function findMatchingSmsInIndex(
     .map((r) => {
       try {
         const parsed = JSON.parse(r.parsed_payload) as ParsedTransaction;
-        // أضف smsIndexId للاستخدام لاحقاً في markSmsSentToOrder
+        // أضف smsIndexId و matched_order_id للاستخدام لاحقاً في reconcile + markSmsSentToOrder
         (parsed as any)._smsIndexId = r.id;
+        (parsed as any).matched_order_id = r.matched_order_id ?? null;
         return parsed;
       } catch {
         return null;

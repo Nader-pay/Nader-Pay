@@ -242,18 +242,51 @@ export async function runSyncEngine(deviceState?: DeviceState): Promise<SyncResu
   return result;
 }
 
-/** مصالحة الأحداث المحلية مع الطلبات الواردة حديثاً بعد انتعاش الشبكة */
-export async function reconcileLocalEvents(): Promise<void> {
+/** مصالحة الأحداث المحلية مع الطلبات الواردة — Phase 3 محسّن */
+export async function reconcileLocalEvents(): Promise<{
+  checked: number;
+  matched: number;
+  conflicts: number;
+  inFlightRecovered: number;
+}> {
+  const result = { checked: 0, matched: 0, conflicts: 0, inFlightRecovered: 0 };
   try {
+    const {
+      getSyncCursor, setSyncCursor, getInFlightOrders,
+      markOrderInFlight, clearOrderInFlight, addToDeadLetter,
+    } = await import('@/lib/database');
+
+    // 1. استرداد In-Flight orders من crash سابق
+    const inFlight = await getInFlightOrders();
+    for (const o of inFlight) {
+      // أي طلب كان IN_FLIGHT وقت الـ crash → REVIEW
+      const stage = (o.transaction_stage ?? 'RECEIVED') as import('./transactionLifecycle').TransactionStage;
+      const { moveToReview } = await import('@/services/transactionLifecycle');
+      await moveToReview(o.id, stage, 'in_flight_at_crash', 'reconcile');
+      await clearOrderInFlight(o.id);
+      result.inFlightRecovered++;
+    }
+
+    // 2. مصالحة SMS مع الطلبات المعلقة
     const cached = await getCachedOrders();
     const pending = cached.filter((o) =>
-      ['new', 'scanning'].includes(o.local_status ?? 'new')
+      ['new', 'scanning', 'review_required'].includes(o.local_status ?? 'new')
     );
-
-    if (pending.length === 0) return;
+    result.checked = pending.length;
+    if (pending.length === 0) {
+      await setSyncCursor('reconcile', { lastSyncedAt: new Date().toISOString(), checkpointStatus: 'valid' });
+      return result;
+    }
 
     const { findMatchingSmsInIndex } = await import('@/services/localSmsIndex');
+    const cursor = await getSyncCursor('reconcile');
+    const cursorAt = cursor?.last_synced_at ?? null;
+
     for (const order of pending) {
+      // تجاوز الطلبات القديمة المصالحة مسبقاً إذا لم تتغير
+      if (cursorAt && order.updated_at && order.updated_at < cursorAt
+          && order.local_status !== 'review_required') continue;
+
       const matches = await findMatchingSmsInIndex({
         id: order.id,
         amount: order.amount,
@@ -263,22 +296,49 @@ export async function reconcileLocalEvents(): Promise<void> {
         created_at: order.created_at,
       });
 
-      if (matches.length > 0) {
-        await logEvent('reconcile_match', `وجد ${matches.length} رسالة SMS مطابقة للطلب ${order.id}`, {
-          orderId: order.id,
-          count: matches.length,
-        });
-        // نُعلم AgentContext بالمطابقات — يُعالجها عبر handleMessage
-        const { dbReady } = await import('@/lib/database');
-        const db = await dbReady;
-        await db.runAsync(
-          "UPDATE orders_cache SET local_status = 'scanning' WHERE id = ? AND local_status = 'new'",
-          [order.id]
+      if (matches.length === 0) continue;
+
+      // فحص تعارض: نفس الـ SMS مرتبطة بأكثر من طلب
+      const conflicting = matches.filter(
+        (m) => (m as any).matched_order_id && (m as any).matched_order_id !== order.id
+      );
+      if (conflicting.length > 0) {
+        result.conflicts++;
+        const { moveToReview } = await import('@/services/transactionLifecycle');
+        await moveToReview(
+          order.id,
+          (order.local_status as any) ?? 'RECEIVED',
+          `SMS مرتبطة بطلب آخر: ${(conflicting[0] as any).matched_order_id}`,
+          'reconcile'
         );
+        await logEvent('reconcile_conflict', `تعارض SMS في الطلب ${order.id}`, {
+          conflictingOrderId: (conflicting[0] as any).matched_order_id,
+        });
+        continue;
       }
+
+      // مطابقة جديدة محتملة
+      await logEvent('reconcile_match', `${matches.length} رسالة SMS مطابقة للطلب ${order.id}`, {
+        orderId: order.id, count: matches.length,
+      });
+      const db2 = await import('@/lib/database').then((m) => m.dbReady);
+      await db2.runAsync(
+        "UPDATE orders_cache SET local_status = 'scanning' WHERE id = ? AND local_status IN ('new','review_required')",
+        [order.id]
+      );
+      result.matched++;
     }
-    await logEvent('reconcile_done', `تمت مصالحة ${pending.length} طلب محلي`);
+
+    // 3. تحديث sync cursor
+    await setSyncCursor('reconcile', {
+      lastSyncedAt: new Date().toISOString(),
+      checkpointStatus: 'valid',
+      metadata: { checked: result.checked, matched: result.matched, conflicts: result.conflicts },
+    });
+
+    await logEvent('reconcile_done', `مصالحة: ${result.checked} فُحص، ${result.matched} تطابق، ${result.conflicts} تعارض`);
   } catch (err) {
     await logEvent('reconcile_error', err instanceof Error ? err.message : 'unknown');
   }
+  return result;
 }

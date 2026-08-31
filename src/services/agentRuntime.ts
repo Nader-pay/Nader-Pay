@@ -20,6 +20,8 @@
  */
 
 import { logEvent } from '@/lib/database';
+import { recordHeartbeat, recordModuleFailure } from '@/services/supervisorEngine';
+import { getNetworkSnapshot } from '@/services/networkIntelligence';
 
 export type RuntimeStatus =
   | 'DISABLED'
@@ -215,6 +217,8 @@ async function doTick() {
 
     if (result.ok) {
       _consecutiveErrors = 0;
+      // Phase 3: سجّل heartbeat في Supervisor
+      recordHeartbeat('runtime');
       // تحديد الحالة بناءً على نوع اتصال realtime
       const rt = result.realtimeStatus ?? 'unknown';
       if (rt === 'connected') {
@@ -226,6 +230,8 @@ async function doTick() {
       scheduleTick(rt === 'connected' ? TICK_INTERVAL_NORMAL_MS : TICK_INTERVAL_DEGRADED_MS);
     } else {
       _consecutiveErrors += 1;
+      // Phase 3: سجّل الفشل في Supervisor
+      recordModuleFailure('runtime', result.error || 'tick_failed', { shouldRestart: _consecutiveErrors >= MAX_CONSECUTIVE_ERRORS });
       if (_consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
         setStatus('ERROR', result.error || 'تجاوز الحد الأقصى للأخطاء المتتالية');
         // لا نُعيد الـ ticker تلقائياً — نترك resumeRuntime لإعادة التشغيل
@@ -238,6 +244,8 @@ async function doTick() {
     _consecutiveErrors += 1;
     const msg = err instanceof Error ? err.message : 'خطأ غير متوقع في الـ tick';
     await logEvent('runtime_tick_error', msg).catch(() => undefined);
+    // Phase 3: سجّل الفشل في Supervisor
+    recordModuleFailure('runtime', msg, { shouldRestart: _consecutiveErrors >= MAX_CONSECUTIVE_ERRORS });
 
     if (_consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
       setStatus('ERROR', msg);

@@ -411,6 +411,99 @@ export const dbReady = SQLite.openDatabaseAsync(DB_NAME, DB_OPTIONS)
     await db.execAsync('ALTER TABLE provider_sources ADD COLUMN last_verification_result TEXT');
   }
 
+  // ── Phase 3 Migrations ──────────────────────────────────────────────────
+
+  // dead_letter_queue: أحداث فشلت بعد استنفاد المحاولات
+  const hasDeadLetter = (await db.getAllAsync<{ name: string }>(
+    "SELECT name FROM sqlite_master WHERE type='table' AND name='dead_letter_queue'"
+  )).length > 0;
+  if (!hasDeadLetter) {
+    await db.execAsync(`
+      CREATE TABLE IF NOT EXISTS dead_letter_queue (
+        id TEXT PRIMARY KEY,
+        event_id TEXT,
+        order_id TEXT,
+        module TEXT NOT NULL,
+        action TEXT NOT NULL,
+        error_code TEXT,
+        safe_error_message TEXT,
+        retry_count INTEGER DEFAULT 0,
+        first_attempt_at TEXT,
+        last_attempt_at TEXT,
+        last_action TEXT,
+        next_action TEXT,
+        payload TEXT,
+        resolved INTEGER DEFAULT 0,
+        resolved_at TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      )
+    `);
+    await db.execAsync("CREATE INDEX IF NOT EXISTS idx_dlq_order ON dead_letter_queue(order_id)");
+    await db.execAsync("CREATE INDEX IF NOT EXISTS idx_dlq_module ON dead_letter_queue(module)");
+    await db.execAsync("CREATE INDEX IF NOT EXISTS idx_dlq_resolved ON dead_letter_queue(resolved)");
+    await db.execAsync("CREATE INDEX IF NOT EXISTS idx_dlq_created ON dead_letter_queue(created_at DESC)");
+  }
+
+  // sync_cursor: persistent checkpoint لاستئناف المزامنة بعد crash/restart
+  const hasSyncCursor = (await db.getAllAsync<{ name: string }>(
+    "SELECT name FROM sqlite_master WHERE type='table' AND name='sync_cursor'"
+  )).length > 0;
+  if (!hasSyncCursor) {
+    await db.execAsync(`
+      CREATE TABLE IF NOT EXISTS sync_cursor (
+        cursor_key TEXT PRIMARY KEY,
+        last_event_id TEXT,
+        last_synced_at TEXT,
+        last_server_sequence TEXT,
+        checkpoint_status TEXT NOT NULL DEFAULT 'valid',
+        metadata TEXT,
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      )
+    `);
+  }
+
+  // supervisor_module_state: حالة كل module للـ persistence بين restarts
+  const hasSupervisorState = (await db.getAllAsync<{ name: string }>(
+    "SELECT name FROM sqlite_master WHERE type='table' AND name='supervisor_module_state'"
+  )).length > 0;
+  if (!hasSupervisorState) {
+    await db.execAsync(`
+      CREATE TABLE IF NOT EXISTS supervisor_module_state (
+        module_name TEXT PRIMARY KEY,
+        status TEXT NOT NULL DEFAULT 'STOPPED',
+        failure_count INTEGER DEFAULT 0,
+        consecutive_failures INTEGER DEFAULT 0,
+        last_failure_at TEXT,
+        last_recovery_at TEXT,
+        last_success_at TEXT,
+        last_error_code TEXT,
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      )
+    `);
+  }
+
+  // offline_queue: إضافة dead_letter_at لتمييز العناصر المنقولة للـ dead letter
+  const oqCols3 = await db.getAllAsync<{ name: string }>("PRAGMA table_info('offline_queue')");
+  const oqColNames3 = new Set(oqCols3.map((c) => c.name));
+  if (!oqColNames3.has('dead_letter_at')) {
+    await db.execAsync('ALTER TABLE offline_queue ADD COLUMN dead_letter_at TEXT');
+  }
+  if (!oqColNames3.has('safe_error_message')) {
+    await db.execAsync('ALTER TABLE offline_queue ADD COLUMN safe_error_message TEXT');
+  }
+
+  // orders_cache: إضافة transaction_stage للـ state machine الكامل
+  const ocCols3 = await db.getAllAsync<{ name: string }>("PRAGMA table_info('orders_cache')");
+  const ocColNames3 = new Set(ocCols3.map((c) => c.name));
+  if (!ocColNames3.has('transaction_stage')) {
+    await db.execAsync("ALTER TABLE orders_cache ADD COLUMN transaction_stage TEXT DEFAULT 'RECEIVED'");
+    await db.execAsync("CREATE INDEX IF NOT EXISTS idx_orders_tx_stage ON orders_cache(transaction_stage)");
+  }
+  if (!ocColNames3.has('in_flight_at')) {
+    await db.execAsync('ALTER TABLE orders_cache ADD COLUMN in_flight_at TEXT');
+  }
+
   // Seed & Update: التأكد من وجود الخادم الافتراضي ببيانات الاتصال الصحيحة دائماً
   // نستخدم backend-proxy الخاص بمشروع التطبيق (hbldhnpduoczneoyfzyz)
   // لأن backend-proxy الخارجي (ccimllgqdxuvymdeikmn) له whitelist يمنع device-api
@@ -1442,4 +1535,198 @@ export async function markNotificationRead(id: string): Promise<void> {
 export async function markAllNotificationsRead(): Promise<void> {
   const db = await dbReady;
   await db.runAsync("UPDATE in_app_notifications SET read = 1");
+}
+
+// ====== Dead Letter Queue ======
+
+export async function addToDeadLetter(item: {
+  id: string;
+  eventId?: string;
+  orderId?: string;
+  module: string;
+  action: string;
+  errorCode?: string;
+  safeErrorMessage?: string;
+  retryCount?: number;
+  firstAttemptAt?: string;
+  lastAttemptAt?: string;
+  lastAction?: string;
+  nextAction?: string;
+  payload?: unknown;
+}): Promise<void> {
+  const db = await dbReady;
+  await db.runAsync(
+    `INSERT OR REPLACE INTO dead_letter_queue
+      (id, event_id, order_id, module, action, error_code, safe_error_message,
+       retry_count, first_attempt_at, last_attempt_at, last_action, next_action, payload, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
+    [
+      item.id,
+      item.eventId ?? null,
+      item.orderId ?? null,
+      item.module,
+      item.action,
+      item.errorCode ?? null,
+      item.safeErrorMessage ?? null,
+      item.retryCount ?? 0,
+      item.firstAttemptAt ?? new Date().toISOString(),
+      item.lastAttemptAt ?? new Date().toISOString(),
+      item.lastAction ?? null,
+      item.nextAction ?? 'REVIEW_REQUIRED',
+      item.payload ? JSON.stringify(item.payload) : null,
+    ]
+  );
+}
+
+export async function getDeadLetterItems(limit = 50): Promise<{
+  id: string;
+  event_id: string | null;
+  order_id: string | null;
+  module: string;
+  action: string;
+  error_code: string | null;
+  safe_error_message: string | null;
+  retry_count: number;
+  first_attempt_at: string;
+  last_attempt_at: string;
+  resolved: number;
+  created_at: string;
+}[]> {
+  const db = await dbReady;
+  return db.getAllAsync(
+    'SELECT * FROM dead_letter_queue WHERE resolved = 0 ORDER BY created_at DESC LIMIT ?',
+    [limit]
+  ) as any;
+}
+
+export async function getDeadLetterCount(): Promise<number> {
+  const db = await dbReady;
+  const row = await db.getFirstAsync<{ count: number }>(
+    'SELECT COUNT(*) as count FROM dead_letter_queue WHERE resolved = 0'
+  );
+  return row?.count ?? 0;
+}
+
+export async function resolveDeadLetterItem(id: string): Promise<void> {
+  const db = await dbReady;
+  await db.runAsync(
+    "UPDATE dead_letter_queue SET resolved = 1, resolved_at = datetime('now'), updated_at = datetime('now') WHERE id = ?",
+    [id]
+  );
+}
+
+// ====== Sync Cursor ======
+
+export async function setSyncCursor(
+  cursorKey: string,
+  data: {
+    lastEventId?: string;
+    lastSyncedAt?: string;
+    lastServerSequence?: string;
+    checkpointStatus?: 'valid' | 'stale' | 'recovering';
+    metadata?: Record<string, unknown>;
+  }
+): Promise<void> {
+  const db = await dbReady;
+  await db.runAsync(
+    `INSERT INTO sync_cursor (cursor_key, last_event_id, last_synced_at, last_server_sequence, checkpoint_status, metadata, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+     ON CONFLICT(cursor_key) DO UPDATE SET
+       last_event_id = excluded.last_event_id,
+       last_synced_at = excluded.last_synced_at,
+       last_server_sequence = excluded.last_server_sequence,
+       checkpoint_status = excluded.checkpoint_status,
+       metadata = excluded.metadata,
+       updated_at = datetime('now')`,
+    [
+      cursorKey,
+      data.lastEventId ?? null,
+      data.lastSyncedAt ?? new Date().toISOString(),
+      data.lastServerSequence ?? null,
+      data.checkpointStatus ?? 'valid',
+      data.metadata ? JSON.stringify(data.metadata) : null,
+    ]
+  );
+}
+
+export async function getSyncCursor(cursorKey: string): Promise<{
+  cursor_key: string;
+  last_event_id: string | null;
+  last_synced_at: string | null;
+  last_server_sequence: string | null;
+  checkpoint_status: string;
+  metadata: string | null;
+  updated_at: string;
+} | null> {
+  const db = await dbReady;
+  return db.getFirstAsync(
+    'SELECT * FROM sync_cursor WHERE cursor_key = ?',
+    [cursorKey]
+  ) as any;
+}
+
+export async function markSyncCursorStale(cursorKey: string): Promise<void> {
+  const db = await dbReady;
+  await db.runAsync(
+    "UPDATE sync_cursor SET checkpoint_status = 'stale', updated_at = datetime('now') WHERE cursor_key = ?",
+    [cursorKey]
+  );
+}
+
+// ====== In-Flight Recovery ======
+
+export async function getInFlightOrders(): Promise<{
+  id: string;
+  local_status: string;
+  transaction_stage: string | null;
+  in_flight_at: string | null;
+  created_at: string;
+}[]> {
+  const db = await dbReady;
+  return db.getAllAsync(
+    `SELECT id, local_status, transaction_stage, in_flight_at, created_at
+     FROM orders_cache
+     WHERE transaction_stage IN ('MATCHING','VERIFYING','RETRYING')
+        OR local_status IN ('syncing','scanning')
+     ORDER BY created_at ASC`
+  ) as any;
+}
+
+export async function markOrderInFlight(orderId: string): Promise<void> {
+  const db = await dbReady;
+  await db.runAsync(
+    "UPDATE orders_cache SET in_flight_at = datetime('now') WHERE id = ?",
+    [orderId]
+  );
+}
+
+export async function clearOrderInFlight(orderId: string): Promise<void> {
+  const db = await dbReady;
+  await db.runAsync(
+    "UPDATE orders_cache SET in_flight_at = NULL WHERE id = ?",
+    [orderId]
+  );
+}
+
+// ====== Audit Trail ======
+
+export type AuditAction =
+  | 'order_received' | 'order_matched' | 'order_confirmed' | 'order_rejected'
+  | 'sms_received' | 'sms_matched' | 'sms_indexed'
+  | 'sync_success' | 'sync_failed' | 'sync_skipped'
+  | 'dead_letter_added' | 'recovery_started' | 'recovery_complete'
+  | 'circuit_open' | 'circuit_closed' | 'device_registered' | 'device_revoked'
+  | 'auth_refreshed' | 'auth_failed';
+
+export async function recordAuditEvent(
+  action: AuditAction,
+  orderId: string | null,
+  details: Record<string, unknown> = {}
+): Promise<void> {
+  await logEvent(`audit:${action}`, orderId ?? 'system', {
+    audit: true,
+    orderId,
+    timestamp: new Date().toISOString(),
+    ...details,
+  });
 }
