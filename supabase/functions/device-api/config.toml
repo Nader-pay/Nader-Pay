@@ -1,0 +1,2 @@
+[functions.device-api]
+verify_jwt = false

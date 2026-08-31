@@ -1,0 +1,14 @@
+[auth.email]
+enable_confirmations = false
+
+[auth.phone]
+enable_confirmations = false
+
+[functions.naderpay-webhook]
+verify_jwt = false
+
+[functions.payment-requests]
+verify_jwt = false
+
+[functions.verification-engine]
+verify_jwt = false

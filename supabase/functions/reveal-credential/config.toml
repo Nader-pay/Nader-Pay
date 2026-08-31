@@ -1,0 +1,2 @@
+[functions.reveal-credential]
+verify_jwt = false
