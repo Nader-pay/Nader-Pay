@@ -15,6 +15,8 @@ export type BackendDetailStatus =
   | 'error'
   | 'unknown'
   | 'unauthorized'
+  | 'forbidden'
+  | 'path_restricted'
   | 'invalid_config'
   | 'timeout'
   | 'server_error';
@@ -60,22 +62,32 @@ export function buildStatusSnapshot(
   previous: AgentDiagnosticState | null
 ): StatusSnapshot {
   const deviceRegistered = Boolean(params.deviceState.deviceId && params.deviceState.deviceToken);
-  const agentRunning =
-    params.settings.enabled && deviceRegistered && params.online && Boolean(params.settings.activeServerProfileId);
 
   const backendStatus = computeBackendStatus(params.online, params.lastBackendMeta);
   const realtimeStatus =
     params.realtimeStatus ??
     (previous?.realtimeStatus === 'connected' ? 'connected' : 'unknown');
 
+  // agentRunning: يتطلب backend متصل فعلاً (online أو path_restricted = الخادم يعمل لكن health endpoint مقيد)
+  // لا يعمل إذا كان unauthorized/forbidden/error/unknown/offline
+  const backendReachable =
+    backendStatus === 'online' || backendStatus === 'path_restricted';
+  const agentRunning =
+    params.settings.enabled &&
+    deviceRegistered &&
+    params.online &&
+    Boolean(params.settings.activeServerProfileId) &&
+    backendReachable;
+
   let connectionStatus: ConnectionStatus = 'CONNECTING';
   if (!params.online) {
     connectionStatus = 'OFFLINE';
-  } else if (backendStatus === 'online') {
+  } else if (backendStatus === 'online' || backendStatus === 'path_restricted') {
     connectionStatus = 'ONLINE';
   } else if (
     backendStatus === 'error' ||
     backendStatus === 'unauthorized' ||
+    backendStatus === 'forbidden' ||
     backendStatus === 'server_error' ||
     backendStatus === 'timeout'
   ) {
@@ -117,7 +129,15 @@ function computeBackendStatus(
   }
 
   if (meta.responseStatus >= 200 && meta.responseStatus < 300) return 'online';
-  if (meta.responseStatus === 401 || meta.responseStatus === 403) return 'unauthorized';
+  if (meta.responseStatus === 401) return 'unauthorized';
+  if (meta.responseStatus === 403) {
+    // نتحقق من body إذا كان Path not allowed = خادم يعمل لكن health endpoint مقيد
+    const bodyStr = meta.error || '';
+    if (bodyStr.includes('Path not allowed') || bodyStr.includes('path_restricted')) {
+      return 'path_restricted';
+    }
+    return 'forbidden';
+  }
   if (meta.responseStatus === 400) return 'invalid_config';
   if (meta.responseStatus === 408) return 'timeout';
   if (meta.responseStatus >= 500) return 'server_error';
@@ -135,6 +155,7 @@ export function statusColor(status: string): string {
     case 'OK':
     case 'ONLINE':
       return '#22c55e';
+    case 'path_restricted':
     case 'warning':
     case 'verifying':
     case 'selected':
@@ -142,6 +163,8 @@ export function statusColor(status: string): string {
     case 'SYNCING':
       return '#f59e0b';
     case 'error':
+    case 'forbidden':
+    case 'unauthorized':
     case 'disconnected':
     case 'failed':
     case 'denied':
@@ -157,6 +180,8 @@ export function statusLabel(status: string): string {
     case 'online':
     case 'ONLINE':
       return 'متصل';
+    case 'path_restricted':
+      return 'متصل (مقيد)';
     case 'offline':
     case 'OFFLINE':
       return 'غير متصل';
@@ -169,7 +194,9 @@ export function statusLabel(status: string): string {
     case 'error':
       return 'خطأ';
     case 'unauthorized':
-      return 'غير مصرح';
+      return 'غير مصرح (401)';
+    case 'forbidden':
+      return 'محظور (403)';
     case 'invalid_config':
       return 'إعداد غير صحيح';
     case 'timeout':

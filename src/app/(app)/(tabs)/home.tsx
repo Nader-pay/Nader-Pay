@@ -470,6 +470,8 @@ function getStatusInfo(
     | 'error'
     | 'unknown'
     | 'unauthorized'
+    | 'forbidden'
+    | 'path_restricted'
     | 'invalid_config'
     | 'timeout'
     | 'server_error'

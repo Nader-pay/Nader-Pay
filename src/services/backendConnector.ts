@@ -68,8 +68,8 @@ export function getLastBackendRequestMeta(): BackendRequestMeta | null {
   return lastConnectionTestMeta ?? lastRequestMeta;
 }
 
-export const DEFAULT_NADERPAY_SERVER_URL = 'https://ccimllgqdxuvymdeikmn.supabase.co/functions/v1/backend-proxy';
-export const DEFAULT_NADERPAY_ANON_TOKEN = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNjaW1sbGdxZHh1dnltZGVpa21uIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODY2ODk3OTQsImV4cCI6MjEwMjI2NTc5NH0.intP2QkhXHswRigBpCYb127yNk3VAfj68rpS_Ujvies';
+export const DEFAULT_NADERPAY_SERVER_URL = `${process.env.EXPO_PUBLIC_SUPABASE_URL || 'https://hbldhnpduoczneoyfzyz.supabase.co'}/functions/v1/backend-proxy`;
+export const DEFAULT_NADERPAY_ANON_TOKEN = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImhibGRobnBkdW9jem5lb3lmenl6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODc3MzM2NzksImV4cCI6MjEwMzMwOTY3OX0.uT0Oy_AYcMIQe1VNrWLTnPCSiE141MntZbp3IgFLpxE';
 
 function buildAuthHeaders(profile: ServerProfile): Record<string, string> {
   const headers: Record<string, string> = {};
@@ -77,11 +77,11 @@ function buildAuthHeaders(profile: ServerProfile): Record<string, string> {
   // للـ Supabase backend-proxy: إرسال Authorization: Bearer {token} و apikey مباشرة
   // نتجاهل apiContract.auth تماماً لتفادي double-prefix أو prefix خاطئ
   const isSupabase = /\.supabase\.co\/functions\/v1\//i.test(profile.baseUrl);
-  const isNaderPay = profile.baseUrl.includes('ccimllgqdxuvymdeikmn');
+  const isAppProxy = profile.baseUrl.includes('hbldhnpduoczneoyfzyz') || profile.baseUrl.includes(process.env.EXPO_PUBLIC_SUPABASE_URL || 'hbldhnpduoczneoyfzyz');
 
   if (isSupabase) {
     // الخادم Supabase دائماً يحتاج Bearer token
-    const token = profile.token || (isNaderPay ? DEFAULT_NADERPAY_ANON_TOKEN : '');
+    const token = profile.token || (isAppProxy ? DEFAULT_NADERPAY_ANON_TOKEN : '');
     if (token) {
       headers['Authorization'] = `Bearer ${token}`;
       headers['apikey'] = token;
@@ -304,15 +304,16 @@ export async function testConnection(profile: ServerProfile): Promise<Connection
       let data: unknown = null;
       try { data = JSON.parse(text); } catch { data = text; }
 
-      const updatedMeta: BackendRequestMeta = {
+      // نُسجّل الـ responseStatus الحقيقي دائماً في lastConnectionTestMeta
+      const realStatus = res.status;
+      const connTestMeta: BackendRequestMeta = {
         ...lastRequestMeta,
-        responseStatus: res.status,
+        responseStatus: realStatus,
         responseBody: data,
         finishedAt: new Date().toISOString(),
       };
-      lastRequestMeta = updatedMeta;
-      // حفظ نتيجة اختبار الاتصال منفصلة — لا تُلوَّث بطلبات البيزنس اللاحقة
-      lastConnectionTestMeta = updatedMeta;
+      lastRequestMeta = connTestMeta;
+      lastConnectionTestMeta = connTestMeta;
 
       // أي رد من الخادم (حتى 4xx) يعني الاتصال يعمل والـ token وصل
       // "Path not allowed" أو "Missing or invalid url" = الخادم يعمل لكن health check مرفوض
@@ -326,19 +327,19 @@ export async function testConnection(profile: ServerProfile): Promise<Connection
       if (isProxyReachable) {
         return {
           ok: true,
-          status: res.status,
+          status: realStatus,
           endpoint: baseUrl,
           method: 'POST',
           responseBody: data,
           requestId,
-          authOk: true,
+          authOk: res.ok || res.status < 500,
         };
       }
 
-      // 401/403 حقيقي = فشل مصادقة
+      // 401/403 حقيقي بدون رسالة proxy معروفة = فشل مصادقة
       return {
         ok: false,
-        error: humanizeBackendError(data, res.status) || `HTTP ${res.status}`,
+        error: humanizeBackendError(data, realStatus) || `HTTP ${realStatus}`,
         endpoint: baseUrl,
         method: 'POST',
         requestId,
@@ -433,15 +434,20 @@ export async function registerDeviceWithBackend(
   profile: ServerProfile,
   deviceInfo: { deviceName: string; platform: string; appVersion: string; androidVersion: string; installationId?: string; userJwt?: string }
 ): Promise<{ ok: boolean; deviceId?: string; deviceToken?: string; error?: string }> {
-  const endpoint = profile.apiContract
-    ? resolveEndpoint(profile.apiContract, 'deviceRegister')
-    : buildAbsoluteUrl(profile.baseUrl, '/functions/v1/device-api/register-with-auth');
+  // نحدد endpoint التسجيل:
+  // - إذا كان apiContract مُعرّفاً: نستخدمه
+  // - وإلا: نُرسل عبر backend-proxy كـ upstream path مباشر
+  let endpoint: string | null = null;
+  if (profile.apiContract) {
+    endpoint = resolveEndpoint(profile.apiContract, 'deviceRegister') ?? null;
+  }
   if (!endpoint) {
-    return { ok: false, error: 'Device register endpoint not configured' };
+    // backend-proxy الخاص بنا يُوكّل الطلب لـ Nader Pay device-api
+    // نُمرر المسار النسبي فقط — sendBackendRequest سيبني الـ URL الكامل
+    endpoint = 'device-api/register-with-auth';
   }
 
-  // device-api/register-with-auth يتطلب user JWT في Authorization header
-  // نُمرره كـ extraHeaders ليصل عبر backend-proxy للـ upstream
+  // extraHeaders: إذا كان هناك user JWT نُمرره، وإلا نترك buildAuthHeaders يُرسل anon key
   const extraHeaders: Record<string, string> = {};
   if (deviceInfo.userJwt) {
     extraHeaders['Authorization'] = `Bearer ${deviceInfo.userJwt}`;
@@ -462,18 +468,20 @@ export async function registerDeviceWithBackend(
   });
 
   if (!result.ok) {
-    return {
-      ok: false,
-      error: result.error || `HTTP ${result.status}`,
-    };
+    return { ok: false, error: result.error || `HTTP ${result.status}` };
   }
 
-  const body = result.responseBody as { device_id?: string; device_token?: string } | undefined;
-  if (!body?.device_id || !body?.device_token) {
-    return { ok: false, error: 'Device registration response missing device_id or device_token' };
+  // الرد من backend-proxy مُغلّف في { ok, status, body } — نستخرج body
+  const wrapped = result.responseBody as { ok?: boolean; body?: { device_id?: string; device_token?: string }; device_id?: string; device_token?: string } | undefined;
+  const bodyData = wrapped?.body ?? wrapped;
+  const deviceId = bodyData?.device_id;
+  const deviceToken = bodyData?.device_token;
+
+  if (!deviceId || !deviceToken) {
+    return { ok: false, error: 'استجابة التسجيل لا تحتوي على device_id أو device_token' };
   }
 
-  return { ok: true, deviceId: body.device_id, deviceToken: body.device_token };
+  return { ok: true, deviceId, deviceToken };
 }
 
 export async function sendHeartbeat(

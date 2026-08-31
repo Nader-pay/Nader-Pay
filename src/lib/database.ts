@@ -325,16 +325,20 @@ export const dbReady = SQLite.openDatabaseAsync(DB_NAME, DB_OPTIONS)
   }
 
   // Seed & Update: التأكد من وجود الخادم الافتراضي ببيانات الاتصال الصحيحة دائماً
+  // نستخدم backend-proxy الخاص بمشروع التطبيق (hbldhnpduoczneoyfzyz)
+  // لأن backend-proxy الخارجي (ccimllgqdxuvymdeikmn) له whitelist يمنع device-api
   const defaultId = 'default-nader-pay-server';
-  const defaultUrl = 'https://ccimllgqdxuvymdeikmn.supabase.co/functions/v1/backend-proxy';
-  const defaultToken = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNjaW1sbGdxZHh1dnltZGVpa21uIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODY2ODk3OTQsImV4cCI6MjEwMjI2NTc5NH0.intP2QkhXHswRigBpCYb127yNk3VAfj68rpS_Ujvies';
+  const appSupabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL || 'https://hbldhnpduoczneoyfzyz.supabase.co';
+  const appAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImhibGRobnBkdW9jem5lb3lmenl6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODc3MzM2NzksImV4cCI6MjEwMzMwOTY3OX0.uT0Oy_AYcMIQe1VNrWLTnPCSiE141MntZbp3IgFLpxE';
+  const defaultUrl = `${appSupabaseUrl}/functions/v1/backend-proxy`;
+  const defaultToken = appAnonKey;
   const now = new Date().toISOString();
 
-  // 1. تحديث أي خادم قديم موجود يحمل ccimllgqdxuvymdeikmn ليكون بالتوكن الصحيح
+  // 1. تحديث أي خادم قديم — يُحوّل URL القديم (ccimllgqdxuvymdeikmn) للـ URL الصحيح
   await db.runAsync(
     `UPDATE server_profiles
      SET token = ?, auth_type = 'bearer', base_url = ?, updated_at = ?
-     WHERE base_url LIKE '%ccimllgqdxuvymdeikmn%' OR id = ?`,
+     WHERE base_url LIKE '%ccimllgqdxuvymdeikmn%' OR base_url LIKE '%backend-proxy%' OR id = ?`,
     [defaultToken, defaultUrl, now, defaultId]
   );
 
@@ -353,7 +357,7 @@ export const dbReady = SQLite.openDatabaseAsync(DB_NAME, DB_OPTIONS)
         defaultUrl,
         'bearer',
         defaultToken,
-        '/config',
+        null,
         now,
         now,
       ]

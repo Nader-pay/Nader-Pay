@@ -140,7 +140,7 @@ export type AgentDiagnosticState = {
   lastSyncAt: string | null;
   lastError: string | null;
   activeServerProfile?: string | null;
-  backendStatus?: 'online' | 'offline' | 'error' | 'unknown' | 'unauthorized' | 'invalid_config' | 'timeout' | 'server_error';
+  backendStatus?: 'online' | 'offline' | 'error' | 'unknown' | 'unauthorized' | 'forbidden' | 'path_restricted' | 'invalid_config' | 'timeout' | 'server_error';
   lastBackendStatus?: number | null;
   lastBackendEndpoint?: string | null;
   lastBackendMethod?: string | null;
