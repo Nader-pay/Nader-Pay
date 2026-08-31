@@ -66,42 +66,45 @@ export const DEFAULT_NADERPAY_ANON_TOKEN = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9
 
 function buildAuthHeaders(profile: ServerProfile): Record<string, string> {
   const headers: Record<string, string> = {};
-  const auth = profile.apiContract?.auth;
-  const prefix = auth?.prefix || (auth?.type === 'bearer' ? 'Bearer' : '');
-  const headerName = auth?.header || 'Authorization';
 
-  // للـ Supabase backend-proxy: يجب إرسال apikey header مع Authorization
+  // للـ Supabase backend-proxy: إرسال Authorization: Bearer {token} و apikey مباشرة
+  // نتجاهل apiContract.auth تماماً لتفادي double-prefix أو prefix خاطئ
   const isSupabase = /\.supabase\.co\/functions\/v1\//i.test(profile.baseUrl);
-  const effectiveToken = profile.token || (profile.baseUrl.includes('ccimllgqdxuvymdeikmn') ? DEFAULT_NADERPAY_ANON_TOKEN : '');
-  const effectiveApiKey = profile.apiKey || (profile.baseUrl.includes('ccimllgqdxuvymdeikmn') ? DEFAULT_NADERPAY_ANON_TOKEN : '');
+  const isNaderPay = profile.baseUrl.includes('ccimllgqdxuvymdeikmn');
 
-  if (auth?.type === 'api_key' || profile.authType === 'api_key') {
-    if (auth?.in === 'query') {
-      // Caller must add query params separately; query path is handled by request building
-    } else if (effectiveApiKey) {
-      headers[headerName] = effectiveApiKey;
-      if (isSupabase) headers['apikey'] = effectiveApiKey;
+  if (isSupabase) {
+    // الخادم Supabase دائماً يحتاج Bearer token
+    const token = profile.token || (isNaderPay ? DEFAULT_NADERPAY_ANON_TOKEN : '');
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+      headers['apikey'] = token;
+    }
+    return headers;
+  }
+
+  // للخوادم غير Supabase: استخدام منطق authType العادي
+  const authType = profile.authType;
+
+  if (authType === 'bearer' && profile.token) {
+    headers['Authorization'] = `Bearer ${profile.token}`;
+  }
+
+  if (authType === 'api_key' && profile.apiKey) {
+    const auth = profile.apiContract?.auth;
+    const headerName = auth?.header || 'Authorization';
+    if (auth?.in !== 'query') {
+      headers[headerName] = profile.apiKey;
     }
   }
 
-  if (auth?.type === 'bearer' || profile.authType === 'bearer') {
-    if (effectiveToken) {
-      headers[headerName] = prefix ? `${prefix} ${effectiveToken}`.trim() : effectiveToken;
-      if (isSupabase) headers['apikey'] = effectiveToken;
-    }
-  }
-
-  if ((auth?.type === 'basic' || profile.authType === 'basic') && profile.username && profile.password) {
-    let encoded = '';
+  if (authType === 'basic' && profile.username && profile.password) {
     try {
-      encoded = typeof btoa === 'function' ? btoa(`${profile.username}:${profile.password}`) : '';
-    } catch {
-      encoded = '';
-    }
-    if (encoded) headers[headerName] = `Basic ${encoded}`;
+      const encoded = typeof btoa === 'function' ? btoa(`${profile.username}:${profile.password}`) : '';
+      if (encoded) headers['Authorization'] = `Basic ${encoded}`;
+    } catch { /* ignore */ }
   }
 
-  if ((auth?.type === 'custom' || profile.authType === 'custom') && profile.customHeaders) {
+  if (authType === 'custom' && profile.customHeaders) {
     Object.assign(headers, profile.customHeaders);
   }
 
@@ -246,6 +249,8 @@ export async function testConnection(profile: ServerProfile): Promise<Connection
   const isBackendProxyV2 = /\/functions\/v1\/backend-proxy$/i.test(baseUrl);
 
   if (isBackendProxyV2) {
+    // للـ backend-proxy v2: نرسل POST مع { path: "config", method: "GET" }
+    // أي رد 2xx يعني نجاح الاتصال والمصادقة — لا نشترط شكل محدد للـ body
     const authHeaders = buildAuthHeaders(profile);
     const requestId = generateUUID();
     lastRequestMeta = {
@@ -257,8 +262,7 @@ export async function testConnection(profile: ServerProfile): Promise<Connection
     try {
       const { fetch: expoFetch } = await import('expo/fetch').catch(() => ({ fetch: globalThis.fetch }));
 
-      // أولاً: تجربة POST مع { path: "config", method: "GET" }
-      const postRes = await expoFetch(baseUrl, {
+      const res = await expoFetch(baseUrl, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -267,66 +271,39 @@ export async function testConnection(profile: ServerProfile): Promise<Connection
         },
         body: JSON.stringify({ path: 'config', method: 'GET' }),
       });
-      const postText = await postRes.text();
-      let postData: unknown = null;
-      try { postData = JSON.parse(postText); } catch { postData = postText; }
 
-      if (postRes.ok && postData && typeof postData === 'object' && (postData as { ok?: boolean }).ok) {
-        lastRequestMeta = {
-          ...lastRequestMeta,
-          responseStatus: postRes.status,
-          responseBody: postData,
-          finishedAt: new Date().toISOString(),
-        };
+      const text = await res.text();
+      let data: unknown = null;
+      try { data = JSON.parse(text); } catch { data = text; }
+
+      lastRequestMeta = {
+        ...lastRequestMeta,
+        responseStatus: res.status,
+        responseBody: data,
+        finishedAt: new Date().toISOString(),
+      };
+
+      if (res.ok) {
+        // أي رد 2xx = اتصال ومصادقة ناجحة
         return {
           ok: true,
-          status: postRes.status,
+          status: res.status,
           endpoint: baseUrl,
           method: 'POST',
-          responseBody: postData,
+          responseBody: data,
           requestId,
           authOk: true,
         };
       }
 
-      // ثانياً: كبديل مباشر تجربة GET /config
-      const getRes = await expoFetch(`${baseUrl}/config`, {
-        method: 'GET',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-request-id': requestId,
-          ...authHeaders,
-        },
-      });
-      const getText = await getRes.text();
-      let getData: unknown = null;
-      try { getData = JSON.parse(getText); } catch { getData = getText; }
-
-      lastRequestMeta = {
-        ...lastRequestMeta,
-        responseStatus: getRes.status,
-        responseBody: getData,
-        finishedAt: new Date().toISOString(),
-      };
-
-      if (!getRes.ok) {
-        return {
-          ok: false,
-          error: humanizeBackendError(getData, getRes.status) || `HTTP ${getRes.status}`,
-          endpoint: `${baseUrl}/config`,
-          method: 'GET',
-          requestId,
-          authOk: getRes.status !== 401 && getRes.status !== 403,
-        };
-      }
+      // رد غير 2xx = خطأ
       return {
-        ok: true,
-        status: getRes.status,
-        endpoint: `${baseUrl}/config`,
-        method: 'GET',
-        responseBody: getData,
+        ok: false,
+        error: humanizeBackendError(data, res.status) || `HTTP ${res.status}`,
+        endpoint: baseUrl,
+        method: 'POST',
         requestId,
-        authOk: true,
+        authOk: res.status !== 401 && res.status !== 403,
       };
     } catch (err) {
       lastRequestMeta = {
@@ -344,7 +321,7 @@ export async function testConnection(profile: ServerProfile): Promise<Connection
     }
   }
 
-  // fallback: discovery URL
+  // خوادم عادية: استخدام discovery URL
   const discoveryUrl = profile.discoveryUrl || '/config';
   const configUrl = buildAbsoluteUrl(profile.baseUrl, discoveryUrl);
   return sendBackendRequest(profile, { url: configUrl, method: 'GET' });
