@@ -324,6 +324,35 @@ export const dbReady = SQLite.openDatabaseAsync(DB_NAME, DB_OPTIONS)
     await db.execAsync('ALTER TABLE provider_sources ADD COLUMN last_verification_result TEXT');
   }
 
+  // Seed: إضافة بيانات الخادم الافتراضية إذا لم تكن موجودة
+  const existingProfiles = await db.getAllAsync<{ id: string }>(
+    "SELECT id FROM server_profiles LIMIT 1"
+  );
+  if (existingProfiles.length === 0) {
+    const defaultId = 'default-nader-pay-server';
+    const defaultToken = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImhibGRobnBkdW9jem5lb3lmenl6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODc3MzM2NzksImV4cCI6MjEwMzMwOTY3OX0.uT0Oy_AYcMIQe1VNrWLTnPCSiE141MntZbp3IgFLpxE';
+    const now = new Date().toISOString();
+    await db.runAsync(
+      `INSERT OR IGNORE INTO server_profiles
+        (id, name, base_url, auth_type, token, discovery_url, is_active, is_connected, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, 1, 0, ?, ?)`,
+      [
+        defaultId,
+        'Nader Pay',
+        'https://hbldhnpduoczneoyfzyz.supabase.co/functions/v1/backend-proxy',
+        'bearer',
+        defaultToken,
+        '',
+        now,
+        now,
+      ]
+    );
+    await db.runAsync(
+      `INSERT INTO agent_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+      ['activeServerProfileId', defaultId]
+    );
+  }
+
   return db;
 });
 

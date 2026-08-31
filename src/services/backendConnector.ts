@@ -67,16 +67,22 @@ function buildAuthHeaders(profile: ServerProfile): Record<string, string> {
   const prefix = auth?.prefix || (auth?.type === 'bearer' ? 'Bearer' : '');
   const headerName = auth?.header || 'Authorization';
 
+  // للـ Supabase backend-proxy: يجب إرسال apikey header مع Authorization
+  const isSupabase = /\.supabase\.co\/functions\/v1\//i.test(profile.baseUrl);
+
   if (auth?.type === 'api_key' && profile.apiKey) {
     if (auth.in === 'query') {
       // Caller must add query params separately; query path is handled by request building
     } else {
       headers[headerName] = profile.apiKey;
+      if (isSupabase) headers['apikey'] = profile.apiKey;
     }
   }
 
   if ((auth?.type === 'bearer' || profile.authType === 'bearer') && profile.token) {
     headers[headerName] = prefix ? `${prefix} ${profile.token}`.trim() : profile.token;
+    // Supabase يحتاج apikey header بنفس القيمة لإتمام التحقق
+    if (isSupabase) headers['apikey'] = profile.token;
   }
 
   if ((auth?.type === 'basic' || profile.authType === 'basic') && profile.username && profile.password) {
@@ -230,7 +236,75 @@ export async function sendBackendRequest(
 }
 
 export async function testConnection(profile: ServerProfile): Promise<ConnectionTestResult> {
-  // إصدار backend-proxy v2 يستخدم /config كـ discovery endpoint
+  // backend-proxy v2: يستخدم POST مع { action: "health" } للتحقق من الاتصال
+  const isBackendProxyV2 = /\/functions\/v1\/backend-proxy$/i.test(profile.baseUrl.replace(/\/$/, ''));
+  if (isBackendProxyV2) {
+    const authHeaders = buildAuthHeaders(profile);
+    const requestId = generateUUID();
+    lastRequestMeta = {
+      endpoint: profile.baseUrl,
+      method: 'POST',
+      requestId,
+      startedAt: new Date().toISOString(),
+    };
+    try {
+      const { fetch: expoFetch } = await import('expo/fetch').catch(() => ({ fetch: globalThis.fetch }));
+      const response = await expoFetch(profile.baseUrl.replace(/\/$/, ''), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-request-id': requestId,
+          ...authHeaders,
+        },
+        body: JSON.stringify({ action: 'health' }),
+      });
+      const text = await response.text();
+      let data: unknown = null;
+      try { data = JSON.parse(text); } catch { data = text; }
+
+      lastRequestMeta = {
+        ...lastRequestMeta,
+        responseStatus: response.status,
+        responseBody: data,
+        finishedAt: new Date().toISOString(),
+      };
+
+      if (!response.ok) {
+        return {
+          ok: false,
+          error: humanizeBackendError(data, response.status) || `HTTP ${response.status}`,
+          endpoint: profile.baseUrl,
+          method: 'POST',
+          requestId,
+          authOk: response.status !== 401 && response.status !== 403,
+        };
+      }
+      return {
+        ok: true,
+        status: response.status,
+        endpoint: profile.baseUrl,
+        method: 'POST',
+        responseBody: data,
+        requestId,
+        authOk: true,
+      };
+    } catch (err) {
+      lastRequestMeta = {
+        ...lastRequestMeta,
+        finishedAt: new Date().toISOString(),
+        error: err instanceof Error ? err.message : 'Connection failed',
+      };
+      return {
+        ok: false,
+        endpoint: profile.baseUrl,
+        method: 'POST',
+        requestId,
+        error: err instanceof Error ? err.message : 'فشل الاتصال',
+      };
+    }
+  }
+
+  // fallback: discovery URL
   const discoveryUrl = profile.discoveryUrl || '/config';
   const configUrl = buildAbsoluteUrl(profile.baseUrl, discoveryUrl);
   return sendBackendRequest(profile, { url: configUrl, method: 'GET' });
