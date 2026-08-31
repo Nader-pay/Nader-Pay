@@ -14,6 +14,13 @@ async function runSchemaStatements(db: SQLite.SQLiteDatabase, source: string): P
     try {
       await db.runAsync(`${statement};`);
     } catch (err) {
+      // INDEX statements على أعمدة غير موجودة (جداول قديمة) لا يجب أن تُوقف التشغيل.
+      // الـ migrations أدناه تُضيف الأعمدة المفقودة ثم تُنشئ الـ indexes.
+      const isIndexStmt = /^\s*CREATE\s+(UNIQUE\s+)?INDEX\b/i.test(statement);
+      if (isIndexStmt) {
+        console.warn('[database] index creation skipped (column may not exist yet):', statement.slice(0, 80));
+        continue;
+      }
       console.error('[database] schema statement failed:', statement.slice(0, 120), err);
       throw err;
     }
@@ -219,9 +226,12 @@ export const dbReady = SQLite.openDatabaseAsync(DB_NAME, DB_OPTIONS)
     CREATE INDEX IF NOT EXISTS idx_sms_transaction ON local_sms_index(transaction_id);
     CREATE INDEX IF NOT EXISTS idx_sms_amount ON local_sms_index(amount);
     CREATE INDEX IF NOT EXISTS idx_sms_sender ON local_sms_index(sender_phone);
-    CREATE INDEX IF NOT EXISTS idx_sms_received ON local_sms_index(received_at);
-    CREATE INDEX IF NOT EXISTS idx_sms_match_status ON local_sms_index(match_status);
+    CREATE INDEX IF NOT EXISTS idx_sms_received ON local_sms_index(received_at)
   `;
+  // ملاحظة: idx_sms_match_status مُزال من الـ schema الأصلي عمداً.
+  // على الأجهزة القديمة التي تحتوي local_sms_index بدون عمود match_status،
+  // CREATE INDEX على عمود غير موجود يُرمى exception ويُوقف dbReady كله قبل الـ migrations.
+  // الـ index يُضاف في قسم migrations أدناه بعد ALTER TABLE.
     await runSchemaStatements(db, schema);
 
     // Verify core tables were created (Web SQLite sometimes silently skips DDL).
