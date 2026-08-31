@@ -1,0 +1,17 @@
+<!-- قائمة التطبيقات المسموح لها بالاستماع -->
+<?xml version="1.0" encoding="utf-8"?>
+<allowed-packages>
+    <!-- Vodafone Cash -->
+    <item>com.vodafone.myvodafone</item>
+    <item>com.vodafone.android</item>
+    <!-- Etisalat/e& CashU -->
+    <item>com.etisalat.egyptapp</item>
+    <!-- Orange Money -->
+    <item>com.orange.android.orangemoney</item>
+    <!-- Fawry -->
+    <item>com.fawry.merchant</item>
+    <!-- InstaPay / CIB -->
+    <item>com.cib.mobilebank</item>
+    <!-- NBE -->
+    <item>com.nbe.ahly</item>
+</allowed-packages>
