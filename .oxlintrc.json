@@ -1,18 +1,15 @@
 {
-  "env": {
-    "node": true,
-    "jest": true
-  },
-  "globals": {
-    "require": "readonly",
-    "module": "readonly",
-    "describe": "readonly",
-    "test": "readonly",
-    "expect": "readonly",
-    "it": "readonly",
-    "beforeAll": "readonly",
-    "afterAll": "readonly",
-    "beforeEach": "readonly",
-    "afterEach": "readonly"
-  }
+  "extends": ["./node_modules/miaoda-expo-devkit/oxlint-config.json"],
+  "ignorePatterns": [
+    "metro.config.js",
+    "babel.config.js",
+    "jest.config.js",
+    ".pnpmfile.cjs",
+    "output/**",
+    "supabase/**",
+    "src/components/ui/**",
+    ".skills/**",
+    "src/__tests__/**",
+    "src/services/__tests__/**"
+  ]
 }

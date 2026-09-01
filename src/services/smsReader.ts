@@ -116,11 +116,24 @@ export async function readAllInboxMessages(maxCount = 500): Promise<SmsMessage[]
 
 /**
  * قراءة الرسائل من مصادر محددة. تُستخدم بعد التوثيق لمعالجة الرسائل من مصادر موثقة فقط.
+ * تستخدم readExistingPaymentMessages (مُفلترة بـ Provider) — للـ Runtime فقط.
  */
 export async function readMessagesFromSources(sourceIds: string[], maxCount = 100): Promise<SmsMessage[]> {
   const all = await readExistingPaymentMessages(maxCount);
   const normalized = sourceIds.map((s) => normalizeSender(s));
   return all.filter((m) => normalized.includes(normalizeSender(m.originatingAddress)));
+}
+
+/**
+ * قراءة جميع رسائل مصدر واحد بدون فلترة Provider.
+ * تُستخدم لـ Balance Before Enrichment — لأن رسائل Recharge/BalanceUpdate
+ * قد لا تُعرَّف كـ Provider معروف لكنها تحتوي Balance Evidence.
+ */
+export async function readAllFromSource(sourceId: string, maxCount = 300): Promise<SmsMessage[]> {
+  if (!IS_ANDROID) return [];
+  const all = await readAllInboxMessages(maxCount);
+  const normId = normalizeSender(sourceId);
+  return all.filter((m) => normalizeSender(m.originatingAddress) === normId);
 }
 
 export async function incrementalScan(lastIndexedAt?: string | null): Promise<SmsMessage[]> {

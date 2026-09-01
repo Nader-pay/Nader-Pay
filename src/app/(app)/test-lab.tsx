@@ -452,18 +452,69 @@ function AnalysisResultCard({ result, compact }: { result: TestLabResult; compac
         </View>
       )}
 
-      {/* الرصيد قبل + بعد */}
-      {result.valid && (result.balanceBefore !== null || result.balanceAfter !== null) && (
+      {/* الرصيد قبل + بعد + Balance Evidence */}
+      {result.valid && (result.balanceBefore !== null || result.balanceAfter !== null || result.amount !== null) && (
         <View className="px-4 py-3 rounded-xl bg-blue-50 border border-blue-200 gap-2">
-          <Text className="text-xs font-semibold text-blue-800 mb-0.5">الرصيد</Text>
-          {result.balanceBefore !== null && (
-            <Row label="الرصيد قبل العملية" value={`${result.balanceBefore.toFixed(2)} جنيه`} />
+          <Text className="text-xs font-semibold text-blue-800 mb-0.5">الرصيد والتحقق</Text>
+
+          {/* Amount */}
+          {result.amount !== null && (
+            <Row label="المبلغ" value={`${result.amount.toFixed(2)} جنيه`} />
           )}
-          {result.balanceBefore === null && result.balanceAfter !== null && (
-            <Row label="الرصيد قبل العملية" value="لا يوجد دليل سابق" />
+
+          {/* Balance Before */}
+          {result.balanceBefore !== null ? (
+            <Row label="الرصيد قبل العملية" value={`${result.balanceBefore.toFixed(2)} جنيه`} success />
+          ) : (
+            <View className="flex-row items-start justify-between py-1 border-b border-blue-200/60">
+              <Text className="text-xs text-blue-700">الرصيد قبل العملية</Text>
+              <Text className="text-xs text-muted-foreground italic">لا يوجد دليل سابق موثوق</Text>
+            </View>
           )}
+
+          {/* Balance After */}
           {result.balanceAfter !== null && (
             <Row label="الرصيد بعد العملية" value={`${result.balanceAfter.toFixed(2)} جنيه`} success />
+          )}
+
+          {/* Balance Flow Validation */}
+          {result.balanceBefore !== null && result.balanceAfter !== null && result.amount !== null && (
+            <View className="mt-1 pt-1 border-t border-blue-200/60">
+              <View className="flex-row items-center justify-between">
+                <Text className="text-xs text-blue-700">
+                  {`${result.balanceBefore.toFixed(2)} + ${result.amount.toFixed(2)} = ${(result.balanceBefore + result.amount).toFixed(2)}`}
+                </Text>
+                <FlowBadge validation={result.flowValidation} />
+              </View>
+            </View>
+          )}
+
+          {/* Balance Evidence Details */}
+          {result.balanceEvidence && (
+            <View className="mt-2 pt-2 border-t border-blue-200/60 gap-1.5">
+              <Text className="text-xs font-semibold text-blue-800">دليل الرصيد السابق</Text>
+              <View className="p-2.5 rounded-lg bg-white/70 border border-blue-200">
+                <Text className="text-xs text-blue-900 leading-5 italic">
+                  {`"${result.balanceEvidence.balanceEvidenceText}"`}
+                </Text>
+              </View>
+              <Row label="وقت الرسالة الدليل" value={formatDate(result.balanceEvidence.sourceMessageReceivedAt)} />
+              <Row label="المرسِل" value={result.balanceEvidence.sourceSender} mono />
+              <Row
+                label="نوع الرسالة"
+                value={
+                  result.balanceEvidence.balanceEvidenceType === 'incoming_payment' ? 'استلام أموال' :
+                  result.balanceEvidence.balanceEvidenceType === 'outgoing_payment' ? 'إرسال أموال' :
+                  result.balanceEvidence.balanceEvidenceType === 'recharge' ? 'شحن رصيد' :
+                  result.balanceEvidence.balanceEvidenceType === 'balance_update' ? 'تحديث رصيد' :
+                  'رسالة مالية'
+                }
+              />
+              <Row
+                label="المسافة الزمنية"
+                value={formatDistance(result.balanceEvidence.distanceSeconds)}
+              />
+            </View>
           )}
         </View>
       )}
@@ -659,4 +710,33 @@ function formatDate(iso: string): string {
     const d = new Date(iso);
     return `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
   } catch { return iso; }
+}
+
+function formatDistance(seconds: number): string {
+  if (seconds < 60) return `${seconds} ثانية`;
+  if (seconds < 3600) return `${Math.round(seconds / 60)} دقيقة`;
+  if (seconds < 86400) return `${Math.round(seconds / 3600)} ساعة`;
+  return `${Math.round(seconds / 86400)} يوم`;
+}
+
+function FlowBadge({ validation }: { validation: string }) {
+  if (validation === 'BALANCE_FLOW_VALID') {
+    return (
+      <View className="px-2 py-0.5 rounded-full bg-green-100 border border-green-300">
+        <Text className="text-xs font-semibold text-green-700">✓ متطابق</Text>
+      </View>
+    );
+  }
+  if (validation === 'BALANCE_FLOW_MISMATCH') {
+    return (
+      <View className="px-2 py-0.5 rounded-full bg-amber-100 border border-amber-300">
+        <Text className="text-xs font-semibold text-amber-700">≠ غير متطابق</Text>
+      </View>
+    );
+  }
+  return (
+    <View className="px-2 py-0.5 rounded-full bg-muted border border-border">
+      <Text className="text-xs text-muted-foreground">غير محدد</Text>
+    </View>
+  );
 }

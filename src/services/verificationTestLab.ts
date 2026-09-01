@@ -6,7 +6,7 @@
  *  2. البحث برقم العملية في رسائل الهاتف
  *  3. البحث برقم الهاتف في رسائل الهاتف
  *
- * يعرض الحقول المستخرجة + balanceBefore + سبب الرفض + parser version + source.
+ * يعرض الحقول المستخرجة + BalanceEvidence كاملة + Balance Flow Validation.
  * مستقل عن UI.
  */
 
@@ -15,7 +15,12 @@ import type { ProviderParseResult } from '@/types/provider';
 import { parseMessageWithProvider, getParserInfo } from './providers';
 import { looksLikeVodafoneCashSms } from './providers/vodafoneCash';
 import { looksLikeInstaPaySms } from './providers/instaPay';
-import { findBalanceBefore } from './balanceBeforeEnricher';
+import {
+  findBalanceEvidence,
+  validateBalanceFlow,
+  type BalanceEvidence,
+  type BalanceFlowValidation,
+} from './balanceBeforeEnricher';
 import {
   searchByTransactionId,
   searchBySenderPhone,
@@ -91,6 +96,12 @@ export type TestLabResult = {
   balanceBefore: number | null;
   /** الرصيد بعد العملية — من نص الرسالة */
   balanceAfter: number | null;
+  /** المبلغ — من نص الرسالة */
+  amount: number | null;
+  /** BalanceEvidence كاملة مع metadata */
+  balanceEvidence: BalanceEvidence | null;
+  /** نتيجة التحقق الحسابي */
+  flowValidation: BalanceFlowValidation;
 };
 
 export type TxIdLabResult = {
@@ -136,6 +147,9 @@ export function analyzeMessageForProvider(
       sourceIdentifier,
       balanceBefore: null,
       balanceAfter: null,
+      amount: null,
+      balanceEvidence: null,
+      flowValidation: 'BALANCE_FLOW_UNKNOWN',
     };
   }
 
@@ -162,27 +176,48 @@ export function analyzeMessageForProvider(
     missingFields: missing,
     rejectionReason: null,
     sourceIdentifier,
-    balanceBefore: null, // يُحسب لاحقاً async بـ enrichWithBalanceBefore
+    balanceBefore: null,
     balanceAfter: parsed.balanceAfterTransaction ?? null,
+    amount: parsed.amount ?? null,
+    balanceEvidence: null,
+    flowValidation: 'BALANCE_FLOW_UNKNOWN',
   };
 }
 
 /**
- * إثراء نتيجة التحليل بـ balanceBefore من Trusted Source (async).
- * يُستدعى بعد analyzeMessageForProvider.
+ * إثراء نتيجة التحليل بـ BalanceEvidence كاملة من Trusted Source (async).
  */
 export async function enrichTestLabResult(
   result: TestLabResult,
-  sourceId: string | null
+  sourceId: string | null,
+  currentMessageId?: string | null
 ): Promise<TestLabResult> {
   if (!result.valid || result.provider !== 'vodafone_cash') return result;
 
-  // occurredAt من الحقول المستخرجة
   const occurredAt = result.extractedFields.occurredAt as string | undefined;
   if (!occurredAt) return result;
 
-  const balanceBefore = await findBalanceBefore(sourceId, occurredAt);
-  return { ...result, balanceBefore };
+  const evidence = await findBalanceEvidence(
+    sourceId,
+    currentMessageId ?? null,
+    occurredAt,
+    result.balanceAfter,
+    result.amount
+  );
+
+  const balanceBefore = evidence?.balanceBefore ?? null;
+  const flowValidation = evidence
+    ? evidence.flowValidation
+    : validateBalanceFlow(0, result.amount, result.balanceAfter) === 'BALANCE_FLOW_VALID'
+      ? 'BALANCE_FLOW_VALID'
+      : 'BALANCE_FLOW_UNKNOWN';
+
+  return {
+    ...result,
+    balanceBefore,
+    balanceEvidence: evidence,
+    flowValidation,
+  };
 }
 
 // ─── 2. البحث برقم العملية ───────────────────────────────────────────────────

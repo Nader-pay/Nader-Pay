@@ -1,6 +1,10 @@
 {
-	"extends": ["miaoda-expo-devkit/biome"],
-	"files": {
-		"includes": ["src/**/*.{js,jsx,ts,tsx}"]
-	}
+    "extends": ["miaoda-expo-devkit/biome"],
+    "files": {
+        "includes": [
+            "src/**/*.{js,jsx,ts,tsx}",
+            "!src/__tests__/**",
+            "!src/services/__tests__/**"
+        ]
+    }
 }
