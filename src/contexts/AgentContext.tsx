@@ -63,6 +63,7 @@ import {
   setOrderTimestamp,
   markSmsSentToOrder,
 } from '@/lib/database';
+import * as Notifications from 'expo-notifications';
 import { setupNotifications, showAgentNotification } from '@/services/notifications';
 import type { AgentSettings, DeviceState, AgentState, Order, SmsMessage, MatchResult, AgentOrderStatus } from '@/types/agent';
 
@@ -1337,6 +1338,115 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
       return () => clearTimeout(timer);
     }
   }, [state.connectionStatus, state.isReady, deviceState.deviceId, settings.enabled, settings.activeServerProfileId, syncOfflineQueue, refreshOrders]);
+
+  // ── Notification Listener — يعالج إشعارات تطبيقات الدفع (InstaPay / فودافون كاش) ────
+  useEffect(() => {
+    if (process.env.EXPO_OS !== 'android') return;
+
+    const subscription = Notifications.addNotificationReceivedListener(async (notification) => {
+      if (!settings.enabled) return;
+
+      const packageId: string =
+        (notification.request.trigger as Record<string, unknown>)?.packageName as string
+        ?? '';
+      const title  = notification.request.content.title  ?? '';
+      const body   = notification.request.content.body   ?? '';
+
+      if (!packageId && !body) return;
+
+      const pending = pendingOrdersRef.current.filter((o) =>
+        ['new', 'scanning', 'matched', 'review_required'].includes(o.localStatus ?? 'new')
+      );
+
+      try {
+        const outcome = await processNotificationMessage(
+          packageId,
+          title,
+          body,
+          pending,
+          {
+            requireSourceVerification: settings.requireSourceVerification,
+            autoConfirm: settings.autoConfirm,
+            existingSmsEvidence: null,
+          }
+        );
+
+        switch (outcome.action) {
+          case 'SOURCE_REJECTED':
+          case 'PARSE_FAILED':
+          case 'PROVIDER_NOT_CONFIGURED':
+            return;
+
+          case 'DUPLICATE':
+            await logDiagnosticEvent(
+              'notification_duplicate',
+              `إشعار مكرر: ${outcome.fingerprint}`,
+              { severity: 'INFO', module: 'matching', dedupKey: `notif_dup:${outcome.fingerprint}` }
+            );
+            return;
+
+          case 'NO_MATCH':
+            await logVerification('', 'notification_no_match', 'no_match',
+              `${outcome.matchCode}: ${outcome.reasons.join(' • ')}`, undefined, packageId
+            );
+            return;
+
+          case 'INSUFFICIENT_EVIDENCE':
+            return;
+
+          case 'REVIEW': {
+            await updateOrderLocal(outcome.orderId, {
+              localStatus: 'review_required',
+              matchScore: outcome.score,
+              verificationCode: outcome.matchCode,
+              verificationScore: outcome.score,
+              syncStatus: 'pending',
+            } as any);
+            await emitNotification('Nader Pay', 'تطابق جزئي عبر إشعار — يحتاج مراجعة', { orderId: outcome.orderId });
+            return;
+          }
+
+          case 'CONFIRMED': {
+            await updateOrderLocal(outcome.orderId, {
+              localStatus: 'matched',
+              matchScore: outcome.score,
+              verificationCode: outcome.matchCode,
+              verificationScore: outcome.score,
+              canonicalId: outcome.canonical.canonicalId,
+              syncStatus: 'pending',
+            } as any);
+            await emitNotification('Nader Pay', 'تم التحقق من الدفع عبر الإشعار', { orderId: outcome.orderId });
+            await logVerification(outcome.orderId, 'match', 'matched',
+              `notification | ${outcome.matchCode} | score=${outcome.score}`, undefined, packageId
+            );
+            if (settings.autoConfirm) {
+              const orderRow = pendingOrdersRef.current.find((o) => o.id === outcome.orderId);
+              if (orderRow) {
+                await sendEvidence(orderRow, {
+                  transactionId: outcome.canonical.normalized.transactionId,
+                  amount: outcome.canonical.normalized.amount,
+                  currency: outcome.canonical.normalized.currency,
+                  senderPhone: outcome.canonical.normalized.senderPhone,
+                  receiverPhone: outcome.canonical.normalized.receiverWallet,
+                  sourceVerified: true,
+                  providerId: outcome.canonical.providerId,
+                  canonicalId: outcome.canonical.canonicalId,
+                });
+              }
+            }
+            return;
+          }
+        }
+      } catch (err) {
+        await logEvent('notification_pipeline_error',
+          err instanceof Error ? err.message : 'خطأ في notification pipeline',
+          { packageId }
+        );
+      }
+    });
+
+    return () => subscription.remove();
+  }, [settings, emitNotification, sendEvidence, logVerification, logEvent]);
 
   // autoStart: إذا كان الوكيل مفعّلاً في الإعدادات، يبدأ تلقائياً عند إتمام التهيئة
   useEffect(() => {

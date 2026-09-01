@@ -16,6 +16,8 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { openSettings } from 'expo-linking';
 import {
   ArrowLeft,
+  Bell,
+  BellOff,
   CheckCircle2,
   HelpCircle,
   MessageSquare,
@@ -26,6 +28,7 @@ import {
   ShieldAlert,
   ShieldCheck,
   Smartphone,
+  Trash2,
   XCircle,
 } from 'lucide-react-native';
 
@@ -52,6 +55,13 @@ import {
 } from '@/services/sourceDiscovery';
 import { upsertProviderSource, type ProviderSource } from '@/services/providerSourceService';
 import type { ProviderName } from '@/types/agent';
+import {
+  KNOWN_PAYMENT_APPS,
+  saveNotificationSource,
+  getNotificationSourcesForProvider,
+  revokeNotificationSource,
+  type NotificationSource,
+} from '@/services/notificationSourceService';
 
 const PROVIDERS: {
   key: ProviderName | 'all';
@@ -102,6 +112,52 @@ export default function SourceDiscoveryScreen() {
   const [manualProvider, setManualProvider] = useState<ProviderName>('vodafone_cash');
   const [manualLoading, setManualLoading] = useState(false);
 
+  // ── Notification Source state ─────────────────────────────────────────────
+  const [notifSources, setNotifSources] = useState<NotificationSource[]>([]);
+  const [notifSaving, setNotifSaving] = useState<string | null>(null); // packageId جاري الحفظ
+
+  const loadNotifSources = useCallback(async () => {
+    try {
+      const all: NotificationSource[] = [];
+      for (const prov of ['vodafone_cash', 'insta_pay', 'orange_cash', 'bank_transfer']) {
+        const rows = await getNotificationSourcesForProvider(prov);
+        all.push(...rows);
+      }
+      setNotifSources(all);
+    } catch {
+      /* silent */
+    }
+  }, []);
+
+  const toggleNotifSource = useCallback(async (
+    packageId: string,
+    displayName: string,
+    provider: string,
+    existing: NotificationSource | undefined
+  ) => {
+    setNotifSaving(packageId);
+    try {
+      if (existing) {
+        await revokeNotificationSource(existing.id);
+      } else {
+        const now = new Date().toISOString();
+        await saveNotificationSource({
+          providerId: provider,
+          packageId,
+          displayName,
+          sourceType: 'notification',
+          status: 'verified',
+          verifiedAt: now,
+          createdAt: now,
+          updatedAt: now,
+        });
+      }
+      await loadNotifSources();
+    } finally {
+      setNotifSaving(null);
+    }
+  }, [loadNotifSources]);
+
   const checkPermission = useCallback(async () => {
     if (process.env.EXPO_OS === 'web') {
       setPermissionGranted(false);
@@ -131,7 +187,8 @@ export default function SourceDiscoveryScreen() {
   useFocusEffect(
     useCallback(() => {
       checkPermission();
-    }, [checkPermission])
+      loadNotifSources();
+    }, [checkPermission, loadNotifSources])
   );
 
   useEffect(() => {
@@ -471,6 +528,91 @@ export default function SourceDiscoveryScreen() {
               <AlertTitle>{verifyResult.ok ? 'تم بنجاح' : 'تنبيه'}</AlertTitle>
               <AlertDescription>{verifyResult.message}</AlertDescription>
             </Alert>
+          )}
+
+          {/* ── قسم مصادر الإشعارات ─────────────────────────────────────── */}
+          {process.env.EXPO_OS !== 'web' && (
+            <View className="py-4 border-t border-border gap-3 mb-4">
+              <View className="flex-row items-center gap-2">
+                <Bell size={16} color="#6b7280" />
+                <Text className="text-sm font-semibold text-foreground">
+                  مصادر الإشعارات (InstaPay / تطبيقات الدفع)
+                </Text>
+              </View>
+              <Text className="text-xs text-muted-foreground leading-5">
+                اختر التطبيقات التي ستستقبل منها إشعارات الدفع. يُحفظ الـ Package ID الحقيقي
+                ولا يُستخدم اسم التطبيق الظاهر فقط.
+              </Text>
+
+              <View className="gap-2">
+                {KNOWN_PAYMENT_APPS.map((app) => {
+                  const existing = notifSources.find((s) => s.packageId === app.packageId);
+                  const isActive = existing?.status === 'verified';
+                  const isBusy   = notifSaving === app.packageId;
+
+                  return (
+                    <View
+                      key={app.packageId}
+                      className="flex-row items-center justify-between px-4 py-3 rounded-xl border border-border bg-card"
+                    >
+                      <View className="flex-row items-center gap-3 flex-1 min-w-0">
+                        <View
+                          className="w-8 h-8 rounded-full items-center justify-center"
+                          style={{ backgroundColor: isActive ? '#f0fdf4' : '#f3f4f6' }}
+                        >
+                          {isActive
+                            ? <ShieldCheck size={16} color="#16a34a" />
+                            : <BellOff    size={16} color="#9ca3af" />
+                          }
+                        </View>
+                        <View className="flex-1 min-w-0">
+                          <Text className="text-sm font-medium text-foreground" numberOfLines={1}>
+                            {app.displayName}
+                          </Text>
+                          <Text className="text-xs text-muted-foreground font-mono" numberOfLines={1}>
+                            {app.packageId}
+                          </Text>
+                        </View>
+                      </View>
+
+                      <Pressable
+                        onPress={() => toggleNotifSource(app.packageId, app.displayName, app.provider, existing)}
+                        disabled={isBusy}
+                        className={cn(
+                          'flex-row items-center gap-1.5 px-3 py-1.5 rounded-lg border active:opacity-70 disabled:opacity-40',
+                          isActive
+                            ? 'border-red-200 bg-red-50'
+                            : 'border-primary bg-primary'
+                        )}
+                      >
+                        {isBusy ? (
+                          <ActivityIndicator size={13} color={isActive ? '#dc2626' : '#ffffff'} />
+                        ) : isActive ? (
+                          <Trash2 size={13} color="#dc2626" />
+                        ) : (
+                          <Plus size={13} color="#ffffff" />
+                        )}
+                        <Text
+                          className="text-xs font-semibold"
+                          style={{ color: isActive ? '#dc2626' : '#ffffff' }}
+                        >
+                          {isActive ? 'إلغاء التوثيق' : 'توثيق'}
+                        </Text>
+                      </Pressable>
+                    </View>
+                  );
+                })}
+              </View>
+
+              {notifSources.filter((s) => s.status === 'verified').length > 0 && (
+                <View className="flex-row items-center gap-2 px-3 py-2 rounded-lg bg-green-50 border border-green-200">
+                  <CheckCircle2 size={14} color="#16a34a" />
+                  <Text className="text-xs text-green-700">
+                    {notifSources.filter((s) => s.status === 'verified').length} مصدر إشعار موثوق نشط
+                  </Text>
+                </View>
+              )}
+            </View>
           )}
         </View>
       </KeyboardAvoidingView>
