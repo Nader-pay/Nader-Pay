@@ -112,7 +112,14 @@ export default function TestLabScreen() {
     try {
       const src = await getVerifiedSourceForProvider(provider);
       const raw = analyzeMessageForProvider(message.trim(), provider, src?.sourceId ?? null);
-      const enriched = await enrichTestLabResult(raw, src?.sourceId ?? null);
+      // نستخدم وقت الآن كـ messageReceivedAt للرسالة المُدخلة يدوياً
+      // (لا يوجد SMS Content Provider ID لرسالة مُدخلة يدوياً)
+      const enriched = await enrichTestLabResult(
+        raw,
+        src?.sourceId ?? null,
+        null,                     // currentMessageId — غير متاح لرسالة يدوية
+        new Date().toISOString()  // messageReceivedAt — الآن كمرجع زمني
+      );
       setResult(enriched);
     } finally {
       setAnalyzing(false);

@@ -186,23 +186,29 @@ export function analyzeMessageForProvider(
 
 /**
  * إثراء نتيجة التحليل بـ BalanceEvidence كاملة من Trusted Source (async).
+ * يمرر currentMessageId و messageReceivedAt للبحث الزمني الصحيح.
  */
 export async function enrichTestLabResult(
   result: TestLabResult,
   sourceId: string | null,
-  currentMessageId?: string | null
+  currentMessageId?: string | null,
+  currentMessageReceivedAt?: string | null
 ): Promise<TestLabResult> {
   if (!result.valid || result.provider !== 'vodafone_cash') return result;
 
+  // المرجع الزمني: messageReceivedAt أولاً، fallback لـ occurredAt
   const occurredAt = result.extractedFields.occurredAt as string | undefined;
-  if (!occurredAt) return result;
+  const refTime = currentMessageReceivedAt ?? occurredAt;
+  if (!refTime) return result;
 
   const evidence = await findBalanceEvidence(
     sourceId,
     currentMessageId ?? null,
-    occurredAt,
+    refTime,
     result.balanceAfter,
-    result.amount
+    result.amount,
+    500,          // maxMessages — مرتفع لضمان العثور على الـ Evidence
+    occurredAt    // transactionOccurredAt للـ Diagnostics
   );
 
   const balanceBefore = evidence?.balanceBefore ?? null;
@@ -250,7 +256,12 @@ export async function searchByTxIdInDevice(
     provider,
     result.match.sender
   );
-  const enriched = await enrichTestLabResult(labResult, sourceIdentifier);
+  const enriched = await enrichTestLabResult(
+    labResult,
+    sourceIdentifier,
+    null,                        // currentMessageId غير متاح في TxId search
+    result.match.receivedAt      // messageReceivedAt من SMS Content Provider
+  );
 
   return {
     searched: true,
@@ -292,7 +303,12 @@ export async function searchByPhoneInDevice(
   const labMatches: TestLabResult[] = [];
   for (const m of result.matches.slice(0, 10)) {
     const labResult = analyzeMessageForProvider(m.originalBody, provider, m.sender);
-    const enriched = await enrichTestLabResult(labResult, sourceIdentifier);
+    const enriched = await enrichTestLabResult(
+      labResult,
+      sourceIdentifier,
+      null,          // currentMessageId غير متاح في Phone search
+      m.receivedAt   // messageReceivedAt من SMS Content Provider
+    );
     labMatches.push(enriched);
   }
 

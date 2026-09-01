@@ -7,14 +7,16 @@
  * القواعد الكاملة (per spec):
  *  1. يبحث فقط داخل Trusted SMS Source (نفس المصدر).
  *  2. يستخدم فقط رسائل سابقة للعملية الحالية (ts < currentTs).
- *  3. يدعم 6+ صيغ رصيد من Vodafone Cash.
+ *  3. يدعم 8+ صيغ رصيد من Vodafone Cash.
  *  4. يأخذ الأقرب زمنياً — ليس أي رصيد قديم.
  *  5. لا يخمّن — إذا لم يجد رسالة صالحة يُعيد null.
- *  6. لا يستخدم الرسالة الحالية نفسها.
+ *  6. لا يستخدم الرسالة الحالية نفسها (بـ ID أو timestamp).
  *  7. يفرّق بين Amount/TransactionID/Balance.
  *  8. يعيد BalanceEvidence كاملة (metadata + validation).
  *  9. يدعم Arabic/English digits + RTL + مسافات متباينة.
  * 10. يسجّل Diagnostics واضحة (لا يسجّل بيانات حساسة زائدة).
+ * 11. يستخدم messageReceivedAt (وقت SMS Content Provider) كمرجع أساسي.
+ * 12. يدعم رسائل Recharge + Outgoing + BalanceUpdate كـ Evidence.
  * ════════════════════════════════════════════════════════════════
  */
 
@@ -99,17 +101,19 @@ function normalizeText(text: string): string {
   return normalizeArabic(toEnDigits(text));
 }
 
-// ─── صيغ الرصيد المدعومة (6+ صيغ per spec) ──────────────────────────────────
+// ─── صيغ الرصيد المدعومة (8+ صيغ per spec) ──────────────────────────────────
 //   1. رصيدك الحالي
 //   2. رصيد حسابك
 //   3. رصيد حسابك في فودافون كاش الحالي
 //   4. رصيد محفظتك الحالي
 //   5. رصيد محفظتك
 //   6. رصيد حسابك الحالي
-//   + الرصيد الحالي، رصيدك
+//   7. الرصيد الحالي
+//   8. رصيدك
+//   + دعم الفاصلة المنقوطة "؛" وعدم وجود فاصل واضح بعد الـ label
 
 const BALANCE_LABEL_PATTERN =
-  /(?:رصيدك\s+الحالي|رصيد\s+حسابك(?:\s+في\s+(?:فودافون\s+)?(?:كاش|فودافون\s+كاش))?\s*(?:الحالي)?|رصيد\s+محفظتك\s*(?:الحالي)?|رصيد\s+حسابك\s+الحالي|الرصيد\s+الحالي|رصيدك)\s*[:\s]\s*([\d,]+(?:\.\d+)?)/i;
+  /(?:رصيدك\s+الحالي|رصيد\s+حسابك(?:\s+في\s+(?:فودافون\s+)?(?:كاش|فودافون\s+كاش))?\s*(?:الحالي)?|رصيد\s+محفظتك\s*(?:الحالي)?|رصيد\s+حسابك\s+الحالي|الرصيد\s+الحالي|رصيدك)\s*[:\s؛]\s*([\d,]+(?:\.\d+)?)/i;
 
 /**
  * استخرج قيمة الرصيد وعبارة الدليل من نص رسالة.
@@ -194,20 +198,24 @@ export function validateBalanceFlow(
 /**
  * البحث عن BalanceEvidence من رسائل Trusted Source السابقة.
  *
- * @param sourceId           - معرّف الـ Trusted SMS Source
- * @param currentMessageId   - ID الرسالة الحالية (لمنع اختيار نفسها)
- * @param beforeIso          - ISO timestamp للعملية الحالية (رسائل أقدم منه فقط)
- * @param balanceAfter       - الرصيد بعد العملية (للتحقق الحسابي)
- * @param amount             - مبلغ العملية (للتحقق الحسابي)
- * @param maxMessages        - الحد الأقصى للرسائل المقروءة
+ * @param sourceId                 - معرّف الـ Trusted SMS Source
+ * @param currentMessageId         - ID الرسالة الحالية (لمنع اختيار نفسها)
+ * @param currentMessageReceivedAt - وقت استلام الرسالة الحالية من SMS Content Provider (ISO)
+ *                                   يُستخدم كمرجع أساسي للمقارنة الزمنية.
+ *                                   إذا كان null يُستخدم transactionOccurredAt.
+ * @param transactionOccurredAt    - وقت العملية المستخرج من نص الرسالة (ISO) — للـ Diagnostics
+ * @param balanceAfter             - الرصيد بعد العملية (للتحقق الحسابي)
+ * @param amount                   - مبلغ العملية (للتحقق الحسابي)
+ * @param maxMessages              - الحد الأقصى للرسائل المقروءة
  */
 export async function findBalanceEvidence(
   sourceId: string | null,
   currentMessageId: string | null,
-  beforeIso: string,
+  currentMessageReceivedAt: string,
   balanceAfter: number | null = null,
   amount: number | null = null,
-  maxMessages = 300
+  maxMessages = 500,
+  transactionOccurredAt?: string | null
 ): Promise<BalanceEvidence | null> {
   if (process.env.EXPO_OS !== 'android') return null;
   if (!sourceId) {
@@ -215,12 +223,45 @@ export async function findBalanceEvidence(
     return null;
   }
 
-  const currentTs = new Date(beforeIso).getTime();
+  // ── المرجع الزمني: messageReceivedAt أولاً، ثم transactionOccurredAt ─────
+  const currentTs = new Date(currentMessageReceivedAt).getTime();
   if (isNaN(currentTs)) {
-    logWarn('beforeIso غير صالح: %s', beforeIso);
+    // محاولة ثانية مع transactionOccurredAt
+    if (transactionOccurredAt) {
+      const fallbackTs = new Date(transactionOccurredAt).getTime();
+      if (!isNaN(fallbackTs)) {
+        log('messageReceivedAt غير صالح — استخدام transactionOccurredAt كمرجع');
+        return _doFindBalanceEvidence(
+          sourceId, currentMessageId, fallbackTs,
+          balanceAfter, amount, maxMessages
+        );
+      }
+    }
+    logWarn('كلا الـ timestamps غير صالحَين: receivedAt=%s occurredAt=%s',
+      currentMessageReceivedAt, transactionOccurredAt ?? '—');
     return null;
   }
 
+  log(
+    'بدء البحث: source=%s currentMsgId=%s refTs=%s',
+    sourceId, currentMessageId ?? 'none', currentMessageReceivedAt
+  );
+
+  return _doFindBalanceEvidence(
+    sourceId, currentMessageId, currentTs,
+    balanceAfter, amount, maxMessages
+  );
+}
+
+/** دالة البحث الداخلية — تقبل timestamp رقمياً مباشرة */
+async function _doFindBalanceEvidence(
+  sourceId: string,
+  currentMessageId: string | null,
+  currentTs: number,
+  balanceAfter: number | null,
+  amount: number | null,
+  maxMessages: number
+): Promise<BalanceEvidence | null> {
   let messages: SmsMessage[];
   try {
     messages = await readAllFromSource(sourceId, maxMessages);
@@ -230,75 +271,93 @@ export async function findBalanceEvidence(
   }
 
   log(
-    'تم قراءة %d رسالة من المصدر %s — البحث عن رصيد سابق لـ %s',
-    messages.length, sourceId, beforeIso
+    'تم قراءة %d رسالة من المصدر %s — البحث عن رصيد سابق لـ ts=%d',
+    messages.length, sourceId, currentTs
   );
 
-  // فلترة: أقدم من العملية، وليست الرسالة الحالية نفسها، وتحتوي Balance Evidence
-  const rejectedReasons: Record<string, string> = {};
-  const candidates: Array<{ msg: SmsMessage; evidence: { value: number; evidenceText: string } }> = [];
+  // ── فلترة وجمع المرشحين ──────────────────────────────────────────────────
+  const rejectedReasons: Array<{ id: string; reason: string }> = [];
+  const candidates: Array<{ msg: SmsMessage; msgTs: number; evidence: { value: number; evidenceText: string } }> = [];
 
   for (const msg of messages) {
+    // ① منع الرسالة الحالية بـ ID
+    if (currentMessageId && msg.id === currentMessageId) {
+      rejectedReasons.push({ id: msg.id, reason: 'CURRENT_MESSAGE — الرسالة الحالية محظورة' });
+      continue;
+    }
+
     const msgTs = new Date(msg.date).getTime();
 
-    // الرسالة الحالية نفسها
-    if (currentMessageId && msg.id === currentMessageId) {
-      rejectedReasons[msg.id] = 'الرسالة الحالية — محظورة كـ Evidence';
+    // ② منع الرسائل اللاحقة وغير المعروفة التاريخ
+    if (isNaN(msgTs)) {
+      rejectedReasons.push({ id: msg.id, reason: 'INVALID_TIMESTAMP — وقت الرسالة غير صالح' });
+      continue;
+    }
+    if (msgTs >= currentTs) {
+      // ② ب: الرسالة التي لها نفس الـ timestamp والـ ID مختلف — قد تكون الرسالة الحالية
+      if (currentMessageId == null && msgTs === currentTs) {
+        rejectedReasons.push({ id: msg.id, reason: 'CURRENT_MESSAGE — نفس الـ timestamp بدون ID' });
+        continue;
+      }
+      rejectedReasons.push({ id: msg.id, reason: `FUTURE_MESSAGE — ts=${msgTs} >= currentTs=${currentTs}` });
       continue;
     }
 
-    // رسالة لاحقة
-    if (isNaN(msgTs) || msgTs >= currentTs) {
-      rejectedReasons[msg.id] = `رسالة لاحقة أو مجهولة الوقت (ts=${msgTs} >= currentTs=${currentTs})`;
+    // ③ Source filtering — رسائل VF Cash فقط
+    if (!isVodafoneCashMessage(msg.body)) {
+      rejectedReasons.push({ id: msg.id, reason: 'SOURCE_MISMATCH — ليست رسالة Vodafone Cash' });
       continue;
     }
 
-    // فحص صلاحية Balance Evidence
+    // ④ Balance Evidence validation
     if (!isValidBalanceEvidenceMessage(msg.body)) {
-      rejectedReasons[msg.id] = 'لا تحتوي على Balance Evidence صالحة';
+      rejectedReasons.push({ id: msg.id, reason: 'NO_BALANCE_EVIDENCE — لا تحتوي Balance صالح' });
       continue;
     }
 
     const evidence = extractBalanceEvidence(msg.body);
     if (!evidence) {
-      rejectedReasons[msg.id] = 'فشل استخراج قيمة الرصيد';
+      rejectedReasons.push({ id: msg.id, reason: 'INVALID_BALANCE_FORMAT — فشل استخراج قيمة الرصيد' });
       continue;
     }
 
-    candidates.push({ msg, evidence });
+    candidates.push({ msg, msgTs, evidence });
   }
 
   log(
-    '%d مرشح صالح من أصل %d رسالة',
-    candidates.length, messages.length
+    'الفلترة: %d مرشح صالح من %d رسالة (%d مرفوضة)',
+    candidates.length, messages.length, rejectedReasons.length
   );
 
   if (candidates.length === 0) {
-    log('لم يُعثر على رسالة سابقة تحتوي Balance Evidence');
-    if (__DEV__ && Object.keys(rejectedReasons).length > 0) {
-      const sampleKeys = Object.keys(rejectedReasons).slice(0, 5);
-      for (const k of sampleKeys) log('  مرفوض [%s]: %s', k, rejectedReasons[k]);
+    log('لم يُعثر على رسالة سابقة تحتوي Balance Evidence — NO_PREVIOUS_BALANCE_EVIDENCE');
+    if (__DEV__) {
+      // عرض أسباب الرفض (بدون نصوص SMS الكاملة)
+      const sample = rejectedReasons.slice(0, 8);
+      for (const r of sample) log('  مرفوض [%s]: %s', r.id, r.reason);
+      if (rejectedReasons.length > 8) log('  ... و%d أخرى', rejectedReasons.length - 8);
     }
     return null;
   }
 
-  // الأحدث أولاً (أقرب للعملية الحالية)
-  candidates.sort((a, b) => new Date(b.msg.date).getTime() - new Date(a.msg.date).getTime());
+  // ── اختيار الأقرب زمنياً (الأحدث قبل العملية) ─────────────────────────────
+  // ترتيب تنازلي بـ msgTs → الأول هو الأقرب
+  candidates.sort((a, b) => b.msgTs - a.msgTs);
   const best = candidates[0];
-  const bestTs = new Date(best.msg.date).getTime();
-  const distanceSeconds = Math.round((currentTs - bestTs) / 1000);
+  const distanceSeconds = Math.round((currentTs - best.msgTs) / 1000);
   const msgType = detectMessageType(best.msg.body);
 
   log(
-    'تم اختيار الرسالة: id=%s sender=%s type=%s distance=%ds balance=%s',
-    best.msg.id, best.msg.originatingAddress, msgType, distanceSeconds, best.evidence.value
+    'اختيار الرسالة: id=%s type=%s distance=%ds balance=%s',
+    best.msg.id, msgType, distanceSeconds, best.evidence.value
   );
 
   const flowValidation = validateBalanceFlow(best.evidence.value, amount, balanceAfter);
   log(
     'Balance Flow: %s + %s = %s (expected %s) => %s',
-    best.evidence.value, amount, balanceAfter,
+    best.evidence.value, amount ?? '?',
     amount !== null ? best.evidence.value + amount : '?',
+    balanceAfter ?? '?',
     flowValidation
   );
 
@@ -319,22 +378,25 @@ export async function findBalanceEvidence(
 
 /**
  * للتوافق مع الكود القديم — يعيد فقط الرقم.
+ * يستخدم messageReceivedAt كمرجع زمني.
  */
 export async function findBalanceBefore(
   sourceId: string | null,
-  beforeIso: string,
-  maxMessages = 300
+  currentMessageReceivedAt: string,
+  maxMessages = 500
 ): Promise<number | null> {
-  const ev = await findBalanceEvidence(sourceId, null, beforeIso, null, null, maxMessages);
+  const ev = await findBalanceEvidence(sourceId, null, currentMessageReceivedAt, null, null, maxMessages);
   return ev?.balanceBefore ?? null;
 }
 
 /**
  * إثراء ProviderParseResult بـ balanceBeforeTransaction من Trusted Source.
+ * يستخدم messageReceivedAt كمرجع أساسي للبحث الزمني.
  */
 export async function enrichWithBalanceBefore<T extends {
   balanceBeforeTransaction: number | null;
   occurredAt: string;
+  messageReceivedAt?: string | null;
   transactionId?: string;
   amount?: number;
   balanceAfterTransaction?: number | null;
@@ -344,12 +406,18 @@ export async function enrichWithBalanceBefore<T extends {
   currentMessageId?: string | null
 ): Promise<T> {
   if (parsed.balanceBeforeTransaction !== null) return parsed;
+
+  // المرجع الزمني: messageReceivedAt أولاً، fallback لـ occurredAt
+  const refTime = parsed.messageReceivedAt ?? parsed.occurredAt;
+
   const ev = await findBalanceEvidence(
     sourceId,
     currentMessageId ?? null,
-    parsed.occurredAt,
+    refTime,
     parsed.balanceAfterTransaction ?? null,
-    parsed.amount ?? null
+    parsed.amount ?? null,
+    500,
+    parsed.occurredAt
   );
   return { ...parsed, balanceBeforeTransaction: ev?.balanceBefore ?? null };
 }

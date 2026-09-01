@@ -115,10 +115,24 @@ export async function readAllInboxMessages(maxCount = 500): Promise<SmsMessage[]
 }
 
 /**
- * قراءة الرسائل من مصادر محددة. تُستخدم بعد التوثيق لمعالجة الرسائل من مصادر موثقة فقط.
- * تستخدم readExistingPaymentMessages (مُفلترة بـ Provider) — للـ Runtime فقط.
+ * قراءة الرسائل من مصادر محددة بدون فلترة Provider.
+ * تُستخدم لـ Balance Before Enrichment — لأن رسائل Recharge/Balance Update
+ * قد لا يُعرِّفها detectProvider لكنها تحتوي Balance Evidence صالحة.
+ *
+ * ملاحظة: للـ Runtime (Payment Processing) استخدم readMessagesFromSourcesFiltered.
  */
-export async function readMessagesFromSources(sourceIds: string[], maxCount = 100): Promise<SmsMessage[]> {
+export async function readMessagesFromSources(sourceIds: string[], maxCount = 300): Promise<SmsMessage[]> {
+  // بدون فلترة Provider — نريد كل رسائل المصدر
+  const all = await readAllInboxMessages(maxCount);
+  const normalized = sourceIds.map((s) => normalizeSender(s));
+  return all.filter((m) => normalized.includes(normalizeSender(m.originatingAddress)));
+}
+
+/**
+ * قراءة الرسائل من مصادر محددة مُفلترة بـ Provider — للـ Runtime فقط.
+ * تُستخدم في معالجة المدفوعات حيث نريد رسائل دفع معروفة فقط.
+ */
+export async function readMessagesFromSourcesFiltered(sourceIds: string[], maxCount = 100): Promise<SmsMessage[]> {
   const all = await readExistingPaymentMessages(maxCount);
   const normalized = sourceIds.map((s) => normalizeSender(s));
   return all.filter((m) => normalized.includes(normalizeSender(m.originatingAddress)));

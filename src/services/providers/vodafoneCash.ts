@@ -231,6 +231,30 @@ export function parseVodafoneCashSms(message: string): ProviderParseResult | nul
     parserId: VF_CASH_PARSER_ID,
     parserVersion: VF_CASH_PARSER_VERSION,
     messageSource: null,
-    messageReceivedAt: null,
+    messageReceivedAt: null,  // يُملأ من الخارج عبر parseVodafoneCashSmsWithMeta
+  };
+}
+
+/**
+ * Parse رسالة Vodafone Cash مع بيانات SMS Content Provider الكاملة.
+ * يُستخدم في مسار الـ Balance Before Enrichment حيث نحتاج messageReceivedAt
+ * كمرجع زمني دقيق (وقت استلام الرسالة الفعلي من الشبكة).
+ *
+ * @param message   - نص الرسالة
+ * @param smsId     - ID الرسالة من SMS Content Provider
+ * @param receivedAt - وقت الاستلام (ISO) من SMS Content Provider
+ */
+export function parseVodafoneCashSmsWithMeta(
+  message: string,
+  smsId: string | null,
+  receivedAt: string | null
+): import('@/types/provider').ProviderParseResult | null {
+  const result = parseVodafoneCashSms(message);
+  if (!result) return null;
+  return {
+    ...result,
+    messageReceivedAt: receivedAt,
+    // messageSource يحمل smsId للـ Balance Before Enrichment
+    messageSource: smsId,
   };
 }
