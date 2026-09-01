@@ -87,6 +87,8 @@
     "babel-preset-expo": "55.0.6",
     "docx": "^9.7.1",
     "eas-cli": "^22.6.0",
+    "eslint": "^9.39.5",
+    "eslint-config-expo": "~55.0.1",
     "eslint-plugin-expo": "^1.0.0",
     "oxlint": "^1.60.0",
     "prettier-plugin-tailwindcss": "^0.5.11",
