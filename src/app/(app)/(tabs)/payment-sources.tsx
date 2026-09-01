@@ -11,21 +11,26 @@ import { useFocusEffect, useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
-  Smartphone,
-  RefreshCw,
+  Bell,
+  BellOff,
   CheckCircle2,
-  XCircle,
-  MessageSquare,
-  ShieldCheck,
-  ShieldAlert,
-  Search,
   FlaskConical,
+  MessageSquare,
+  RefreshCw,
+  Search,
+  ShieldAlert,
+  ShieldCheck,
+  Smartphone,
+  XCircle,
 } from 'lucide-react-native';
+import type { RelativePathString } from 'expo-router';
+import { getAllNotificationSources, getNotificationListenerState } from '@/services/notificationSourceService';
 
 import { useAgent } from '@/contexts/AgentContext';
 import { getIndexedSmsStats, getIndexedSmsCount } from '@/services/localSmsIndex';
 import { listProviderSources, type ProviderSource } from '@/services/providerSourceService';
 import type { ProviderName } from '@/types/agent';
+import type { NotificationSource } from '@/services/notificationSourceService';
 
 const PROVIDERS: {
   key: ProviderName;
@@ -68,14 +73,22 @@ export default function PaymentSourcesScreen() {
   });
   const [loading, setLoading] = useState(true);
 
+  // ── Notification Sources state ─────────────────────────────────────────────
+  const [notifSources, setNotifSources] = useState<NotificationSource[]>([]);
+  const [listenerEnabled, setListenerEnabled] = useState(false);
+
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [rows, , providerSources] = await Promise.all([
+      const [rows, , providerSources, notifRows, listenerState] = await Promise.all([
         getIndexedSmsStats().catch(() => []),
         getIndexedSmsCount().catch(() => 0),
         listProviderSources().catch(() => []),
+        getAllNotificationSources().catch(() => [] as NotificationSource[]),
+        getNotificationListenerState().catch(() => 'unknown' as const),
       ]);
+      setNotifSources(notifRows);
+      setListenerEnabled(listenerState === 'enabled');
       const next: typeof stats = {
         vodafone_cash: { messages: 0, lastAt: null },
         orange_cash: { messages: 0, lastAt: null },
@@ -154,6 +167,9 @@ export default function PaymentSourcesScreen() {
   }, [state.pendingOrders])();
 
   const totalMessages = Object.values(stats).reduce((a, b) => a + b.messages, 0);
+  const activeNotifCount = notifSources.filter(
+    (s) => ['verified', 'selected', 'permission_required'].includes(s.status)
+  ).length;
 
   return (
     <View className="flex-1 bg-background" style={{ paddingTop: insets.top }}>
@@ -182,15 +198,86 @@ export default function PaymentSourcesScreen() {
           <ActivityIndicator className="mt-12" />
         ) : (
           <View className="gap-4 pb-8">
+
+            {/* ══ بطاقة مصادر الإشعارات المستقلة ══════════════════════════ */}
+            <Pressable
+              onPress={() => router.push('/(app)/notification-sources' as RelativePathString)}
+              className="px-4 py-4 border border-border rounded-2xl bg-card active:opacity-80"
+              style={{ borderCurve: 'continuous' } as object}
+              android_ripple={{ color: 'rgba(0,0,0,0.05)' }}
+            >
+              <View className="flex-row items-center gap-3">
+                <View
+                  className="w-10 h-10 rounded-full items-center justify-center shrink-0"
+                  style={{ backgroundColor: activeNotifCount > 0 ? '#f0fdf4' : '#f3f4f6' }}
+                >
+                  {activeNotifCount > 0
+                    ? <Bell size={20} color="#16a34a" />
+                    : <BellOff size={20} color="#9ca3af" />}
+                </View>
+                <View className="flex-1 gap-0.5">
+                  <Text className="text-base font-semibold text-foreground">
+                    مصادر الإشعارات
+                  </Text>
+                  <Text className="text-xs text-muted-foreground">
+                    {activeNotifCount > 0
+                      ? `${activeNotifCount} تطبيق موثَّق${listenerEnabled ? ' • يستقبل إشعارات' : ' • Listener غير مفعّل'}`
+                      : 'لا توجد تطبيقات موثَّقة — اضغط للإضافة'}
+                  </Text>
+                </View>
+                <View className="flex-row items-center gap-1">
+                  {listenerEnabled
+                    ? <ShieldCheck size={16} color="#22c55e" />
+                    : <ShieldAlert size={16} color="#f59e0b" />}
+                  <Text className="text-xs font-medium text-muted-foreground">›</Text>
+                </View>
+              </View>
+
+              {/* شريط التطبيقات الموثَّقة */}
+              {activeNotifCount > 0 && (
+                <View className="flex-row flex-wrap gap-1.5 mt-3 pl-[52px]">
+                  {notifSources
+                    .filter((s) => ['verified', 'selected', 'permission_required'].includes(s.status))
+                    .slice(0, 4)
+                    .map((s) => (
+                      <View
+                        key={s.id}
+                        className="px-2 py-0.5 rounded-full bg-muted"
+                      >
+                        <Text className="text-xs text-muted-foreground" numberOfLines={1}>
+                          {s.displayName}
+                        </Text>
+                      </View>
+                    ))}
+                  {activeNotifCount > 4 && (
+                    <View className="px-2 py-0.5 rounded-full bg-muted">
+                      <Text className="text-xs text-muted-foreground">+{activeNotifCount - 4}</Text>
+                    </View>
+                  )}
+                </View>
+              )}
+            </Pressable>
+
+            {/* ── فاصل ───────────────────────────────────────────────────── */}
+            <View className="flex-row items-center gap-2">
+              <View className="flex-1 h-px bg-border" />
+              <Text className="text-xs text-muted-foreground px-1">مصادر SMS</Text>
+              <View className="flex-1 h-px bg-border" />
+            </View>
+
+            {/* ══ بطاقات SMS لكل مزود ══════════════════════════════════════ */}
             {PROVIDERS.map((p) => {
               const s = stats[p.key];
               const oc = orderCounts[p.key];
-              const enabled = settings.providers[p.key]?.enabled ?? true;
               const source = sources[p.key];
               const status = source?.status ?? 'unverified';
               const info = statusInfo[status] ?? statusInfo.unverified;
               return (
-                <View key={p.key} className="px-4 py-5 border border-border rounded-2xl bg-card gap-3">
+                <View
+                  key={p.key}
+                  className="px-4 py-5 border border-border rounded-2xl bg-card gap-3"
+                  style={{ borderCurve: 'continuous' } as object}
+                >
                   <View className="flex-row items-center justify-between">
                     <View className="flex-row items-center gap-3">
                       <View className="w-10 h-10 rounded-full bg-muted items-center justify-center">
@@ -202,11 +289,9 @@ export default function PaymentSourcesScreen() {
                       </View>
                     </View>
                     <View className="flex-row items-center gap-1">
-                      {source?.verified ? (
-                        <ShieldCheck size={18} color="#22c55e" />
-                      ) : (
-                        <ShieldAlert size={18} color="#ef4444" />
-                      )}
+                      {source?.verified
+                        ? <ShieldCheck size={18} color="#22c55e" />
+                        : <ShieldAlert size={18} color="#ef4444" />}
                       <Text className="text-xs font-medium" style={{ color: info.color }}>
                         {info.label}
                       </Text>
@@ -224,10 +309,13 @@ export default function PaymentSourcesScreen() {
                     آخر رسالة: {s.lastAt ? formatDate(s.lastAt) : '—'}
                   </Text>
 
-                  {/* أزرار الإجراءات */}
                   <View className="flex-row gap-2 mt-2">
                     <Pressable
-                      onPress={() => router.push(`/discovery?provider=${encodeURIComponent(p.key)}` as any)}
+                      onPress={() =>
+                        router.push(
+                          `/(app)/discovery?provider=${encodeURIComponent(p.key)}` as RelativePathString
+                        )
+                      }
                       className="flex-1 flex-row items-center justify-center gap-1.5 px-3 py-2.5 rounded-xl bg-primary active:opacity-70"
                     >
                       <Search size={15} color="#ffffff" />
@@ -236,7 +324,11 @@ export default function PaymentSourcesScreen() {
                       </Text>
                     </Pressable>
                     <Pressable
-                      onPress={() => router.push(`/test-lab?provider=${encodeURIComponent(p.key)}` as any)}
+                      onPress={() =>
+                        router.push(
+                          `/(app)/test-lab?provider=${encodeURIComponent(p.key)}` as RelativePathString
+                        )
+                      }
                       className="flex-row items-center justify-center gap-1.5 px-3 py-2.5 rounded-xl border border-border bg-card active:opacity-70"
                     >
                       <FlaskConical size={15} color="#6b7280" />
@@ -244,7 +336,6 @@ export default function PaymentSourcesScreen() {
                     </Pressable>
                   </View>
 
-                  {/* Parser version */}
                   {source?.parserVersion && (
                     <Text className="text-xs text-muted-foreground/60 mt-1">
                       Parser v{source.parserVersion}
@@ -258,8 +349,8 @@ export default function PaymentSourcesScreen() {
             <View className="px-4 py-4 border border-border rounded-2xl bg-muted/30 gap-2">
               <Text className="text-sm font-semibold text-foreground">التحقق من مصدر الرسالة</Text>
               <Text className="text-xs text-muted-foreground leading-5">
-                لا يتم معالجة رسائل SMS إلا من مصادر موثقة في قاعدة البيانات. اضغط "اكتشاف وتوثيق المصدر" لقراءة
-                رسائل Android SMS Provider وتحديد المصدر الصحيح.
+                لا يتم معالجة رسائل SMS إلا من مصادر موثقة. اضغط "اكتشاف المصدر" لقراءة
+                رسائل Android SMS Provider وتحديد المرسِل الصحيح.
               </Text>
             </View>
           </View>
