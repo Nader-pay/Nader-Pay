@@ -1,4 +1,4 @@
-import { readExistingPaymentMessages } from './smsReader';
+import { readAllInboxMessages, readExistingPaymentMessages } from './smsReader';
 import { detectProvider } from './providers';
 import type { ProviderName, SmsMessage } from '@/types/agent';
 
@@ -14,16 +14,20 @@ export type SmsSource = {
 };
 
 /**
- * اكتشاف مصادر SMS المحتملة. تقرأ الرسائل من Android SMS Provider،
- * تجمّعها حسب المرسل، وتصفّفها حسب Provider.
- * لا تُعامَل الرسائل كملفات؛ نستخدم بيانات Android SMS Provider فقط.
+ * اكتشاف مصادر SMS المحتملة. تقرأ **كل** رسائل الـ inbox من Android SMS Provider،
+ * تجمّعها حسب المرسل/العنوان، وتصفّفها حسب Provider.
+ *
+ * مهم: نستخدم readAllInboxMessages وليس readExistingPaymentMessages
+ * لأن الأخيرة تُفلتر رسائل المصادر غير المعروفة مسبقاً — مما يمنع اكتشاف
+ * مصادر جديدة كـ VF-Cash وBanque Misr قبل توثيقها.
  */
 export async function discoverSmsSources(): Promise<SmsSource[]> {
   if (process.env.EXPO_OS === 'web') {
     return [];
   }
 
-  const messages = await readExistingPaymentMessages(500);
+  // قراءة كل الرسائل بدون فلترة لاكتشاف جميع المصادر
+  const messages = await readAllInboxMessages(500);
   const bySource = new Map<string, SmsMessage[]>();
 
   for (const message of messages) {
@@ -40,7 +44,8 @@ export async function discoverSmsSources(): Promise<SmsSource[]> {
   for (const [sourceId, list] of bySource) {
     const sorted = [...list].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
     const latest = sorted[0];
-    const providerHint = detectProvider(latest.body);
+    // اكتشاف Provider من أكثر الرسائل تطابقاً (وليس فقط الأخيرة)
+    const providerHint = detectDominantProvider(sorted.slice(0, 10));
 
     sources.push({
       sourceId,
@@ -55,6 +60,27 @@ export async function discoverSmsSources(): Promise<SmsSource[]> {
   }
 
   return sources.sort((a, b) => b.messageCount - a.messageCount);
+}
+
+/**
+ * حدد Provider السائد من مجموعة رسائل.
+ * يستخدم تصويت الأغلبية بدلاً من أخذ أول رسالة فقط.
+ */
+function detectDominantProvider(messages: SmsMessage[]): ProviderName {
+  const counts = new Map<ProviderName, number>();
+  for (const m of messages) {
+    const p = detectProvider(m.body);
+    counts.set(p, (counts.get(p) ?? 0) + 1);
+  }
+  let best: ProviderName = 'unknown';
+  let bestCount = 0;
+  for (const [p, c] of counts) {
+    if (p !== 'unknown' && c > bestCount) {
+      best = p;
+      bestCount = c;
+    }
+  }
+  return best;
 }
 
 /**

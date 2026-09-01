@@ -1,6 +1,6 @@
 /**
  * Unit Tests — InstaPay / Banque Misr Parser v2
- * يختبر: valid/invalid/fingerprint/no-transactionId/promo
+ * يختبر: valid/invalid/fingerprint/no-transactionId/promo/date-formats
  */
 
 import {
@@ -9,7 +9,7 @@ import {
   buildInstaPayFingerprint,
   INSTAPAY_PARSER_ID,
   INSTAPAY_PARSER_VERSION,
-} from '../../src/services/providers/instaPay';
+} from '../services/providers/instaPay';
 
 // ─── بيانات الاختبار ─────────────────────────────────────────────────────────
 

@@ -40,23 +40,46 @@ function toEnDigits(text: string): string {
     .replace(/[۰-۹]/g, (c) => String(c.charCodeAt(0) - 0x06f0));
 }
 
+/**
+ * تحليل تاريخ Vodafone Cash — يدعم الصيغتين:
+ *   YY-MM-DD HH:MM  (مثال: 21-08-26 00:15)  ← الشائع في الرسائل الحقيقية
+ *   HH:MM DD/MM/YY  (مثال: 00:15 26/08/21)  ← صيغة قديمة
+ *   DD/MM/YYYY HH:MM                         ← نمط بديل
+ * يستخدم Date.UTC لتجنب مشاكل timezone.
+ */
 function parseOccurredAt(dateText: string | null): string | null {
   if (!dateText) return null;
-  const norm = toEnDigits(dateText);
-  const match = norm.match(/(\d{1,2}):(\d{2})(?::(\d{2}))?\s+(\d{1,2})[\/-](\d{1,2})[\/-](\d{2,4})/);
-  if (!match) return null;
-  const [, hours, minutes, , day, month, year] = match;
-  let fullYear = parseInt(year, 10);
-  if (fullYear < 100) fullYear += 2000;
-  const date = new Date(
-    fullYear,
-    parseInt(month, 10) - 1,
-    parseInt(day, 10),
-    parseInt(hours, 10),
-    parseInt(minutes, 10)
-  );
-  if (isNaN(date.getTime())) return null;
-  return date.toISOString();
+  const norm = toEnDigits(dateText.trim());
+
+  // ── النمط الأحدث: YY-MM-DD HH:MM ─────────────────────────────────────────
+  // مثال: "21-08-26 00:15" → year=2021, month=08, day=26
+  const newFmt = norm.match(/^(\d{2})[\-\/](\d{2})[\-\/](\d{2})\s+(\d{2}):(\d{2})/);
+  if (newFmt) {
+    const [, yy, mm, dd, hh, min] = newFmt;
+    const fullYear = 2000 + parseInt(yy, 10);
+    const ts = Date.UTC(fullYear, parseInt(mm, 10) - 1, parseInt(dd, 10), parseInt(hh, 10), parseInt(min, 10));
+    if (!isNaN(ts)) return new Date(ts).toISOString();
+  }
+
+  // ── نمط DD/MM/YYYY HH:MM أو YYYY-MM-DD HH:MM ────────────────────────────
+  const fullDate = norm.match(/(\d{1,2})[\-\/](\d{1,2})[\-\/](\d{4})\s+(\d{2}):(\d{2})/);
+  if (fullDate) {
+    const [, d, m, y, h, min] = fullDate;
+    const ts = Date.UTC(parseInt(y, 10), parseInt(m, 10) - 1, parseInt(d, 10), parseInt(h, 10), parseInt(min, 10));
+    if (!isNaN(ts)) return new Date(ts).toISOString();
+  }
+
+  // ── النمط القديم: HH:MM DD/MM/YY ────────────────────────────────────────
+  const oldFmt = norm.match(/(\d{1,2}):(\d{2})(?::(\d{2}))?\s+(\d{1,2})[\/-](\d{1,2})[\/-](\d{2,4})/);
+  if (oldFmt) {
+    const [, hours, minutes, , day, month, year] = oldFmt;
+    let fullYear = parseInt(year, 10);
+    if (fullYear < 100) fullYear += 2000;
+    const ts = Date.UTC(fullYear, parseInt(month, 10) - 1, parseInt(day, 10), parseInt(hours, 10), parseInt(minutes, 10));
+    if (!isNaN(ts)) return new Date(ts).toISOString();
+  }
+
+  return null;
 }
 
 /** هل تبدو الرسالة من Vodafone Cash؟ */
@@ -137,8 +160,9 @@ export function parseVodafoneCashSms(message: string): ProviderParseResult | nul
   if (isNaN(amount) || amount <= 0) return null;
 
   // ─── رقم العملية (مطلوب) ─────────────────────────────────────────────────
+  // بعد normalizeArabic: ة→ه ، فـ "العملية"→"العمليه" و"المعاملة"→"المعامله"
   const transactionIdMatch = normalized.match(
-    /(?:رقم\s+(?:العملية|المعاملة)|Transaction\s*(?:ID|No))\s*[:\s]\s*([0-9]{6,})/i
+    /(?:رقم\s+(?:العمليه|العملية|المعامله|المعاملة)|Transaction\s*(?:ID|No))\s*[:\s]\s*([0-9]{6,})/i
   );
   if (!transactionIdMatch) return null;
   const transactionId = toEnDigits(transactionIdMatch[1]).trim();
@@ -152,14 +176,18 @@ export function parseVodafoneCashSms(message: string): ProviderParseResult | nul
     : null;
 
   // ─── اسم المُرسِل ─────────────────────────────────────────────────────────
+  // بعد normalizeArabic: "بإسم"→"بإسم" (لا تغيير)، "باسم"→"باسم"
+  // "المسجل" تبقى كما هي، "بإسم" قد تصبح "بإسم"
   const senderNameMatch = normalized.match(
-    /(?:المسجل\s+(?:بإسم|باسم|بإسم)|بإسم|باسم)\s+([^\n.،,\d][^\n.،,]{1,60})/
+    /(?:المسجل\s+(?:بإسم|بإسم|باسم)|بإسم|باسم)\s+([^\n.،,\d][^\n.،,]{1,60})/
   );
   const senderName = senderNameMatch ? senderNameMatch[1].trim() : null;
 
   // ─── محفظة المستلم ────────────────────────────────────────────────────────
+  // "محفظتك" لا تتغير بـ normalizeArabic
+  // الـ regex يأخذ الأرقام فقط (بدون . في النهاية)
   const recipientWalletMatch = normalized.match(
-    /(?:على\s+رقم\s+محفظتك|محفظتك|رقم\s+المحفظة)\s+([0-9+\s().-]{7,})/
+    /(?:على\s+رقم\s+محفظتك|محفظتك|رقم\s+المحفظه|رقم\s+المحفظة)\s+([0-9]{7,15})/
   );
   const recipientWallet = recipientWalletMatch
     ? normalizePhone(toEnDigits(recipientWalletMatch[1]))
@@ -174,8 +202,10 @@ export function parseVodafoneCashSms(message: string): ProviderParseResult | nul
     : null;
 
   // ─── تاريخ/وقت العملية ───────────────────────────────────────────────────
+  // "العملية"→"العمليه"، "المعاملة"→"المعامله" بعد normalize
+  // يدعم: "تاريخ العملية: 21-08-26 00:15" و "تاريخ العملية: 00:15 26-08-21"
   const dateMatch = normalized.match(
-    /(?:تاريخ\s+(?:العملية|المعاملة)|التاريخ)\s*[:\s]\s*([\d]{1,2}[:\d]{2,4}\s+[\d]{1,2}[\/-][\d]{1,2}[\/-][\d]{2,4})/
+    /(?:تاريخ\s+(?:العمليه|العملية|المعامله|المعاملة)|التاريخ)\s*[:\s]\s*([\d]{2}[\-\/][\d]{2}[\-\/][\d]{2,4}\s+[\d]{2}:[\d]{2}|[\d]{1,2}:[\d]{2}(?::[\d]{2})?\s+[\d]{1,2}[\/-][\d]{1,2}[\/-][\d]{2,4})/
   );
   const occurredAt = parseOccurredAt(dateMatch ? dateMatch[1] : null) ?? new Date().toISOString();
 

@@ -138,12 +138,13 @@ export async function validateNotificationTrustedSource(
     const db = await dbReady;
 
     // أولاً: فحص notification_sources المخصصة
+    // يدعم status = 'verified' (المستخدم من notificationSourceService) و 'active' (القديم)
     const notifRows = await db.getAllAsync<{
       provider_id: string; package_id: string; status: string;
     }>(
       `SELECT provider_id, package_id, status
        FROM notification_sources
-       WHERE status = 'active' AND package_id = ?
+       WHERE status IN ('verified', 'active', 'selected') AND package_id = ?
        LIMIT 1`,
       [packageIdentifier]
     );

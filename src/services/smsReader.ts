@@ -86,8 +86,29 @@ export async function readExistingPaymentMessages(maxCount = 100): Promise<SmsMe
       },
       (count: number, messages: string) => {
         const parsed = parseSmsList(messages);
+        // فلترة رسائل الدفع المعروفة فقط — للاستخدام في Runtime
         const filtered = parsed.filter((m) => detectProvider(m.body) !== 'unknown');
         resolve(filtered);
+      }
+    );
+  });
+}
+
+/**
+ * قراءة جميع الرسائل من inbox بدون فلترة — للاستخدام في Source Discovery.
+ * لا تفلتر بـ Provider لأن الهدف اكتشاف المصادر وليس معالجة الدفعات.
+ */
+export async function readAllInboxMessages(maxCount = 500): Promise<SmsMessage[]> {
+  if (!IS_ANDROID) return [];
+  const SmsAndroid = await getSmsAndroidModule();
+  if (!SmsAndroid) return [];
+
+  return new Promise((resolve, reject) => {
+    SmsAndroid.list(
+      JSON.stringify({ box: 'inbox', readState: -1, maxCount }),
+      (fail: string) => reject(new Error(fail)),
+      (_count: number, messages: string) => {
+        resolve(parseSmsList(messages));
       }
     );
   });

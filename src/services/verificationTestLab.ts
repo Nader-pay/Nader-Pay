@@ -37,24 +37,28 @@ function detectRejectionReason(body: string, provider: ProviderName): string {
   const isIPLooking = looksLikeInstaPaySms(body);
 
   if (provider === 'vodafone_cash') {
-    if (!isVFLooking) return 'الرسالة لا تنتمي لـ Vodafone Cash (لا تحتوي على كلمات مفتاحية المحفظة).';
+    if (!isVFLooking) return 'الرسالة لا تنتمي لـ Vodafone Cash (لا تحتوي على كلمات مفتاحية: محفظة / vodafone cash).';
     if (!norm.includes('تم استلام') && !norm.includes('received'))
-      return 'الرسالة لا تمثل استلام أموال — لا تحتوي على "تم استلام".';
+      return 'الرسالة لا تمثل استلام أموال — يجب أن تحتوي على "تم استلام". رسائل الرصيد والعروض مرفوضة.';
     if (norm.includes('تم ارسال') || norm.includes('تم إرسال'))
       return 'رسالة إرسال أموال وليست استلام — مرفوضة.';
-    if (!body.match(/رقم\s+(?:العملية|المعاملة)/))
-      return 'لم يُعثر على رقم العملية — مطلوب للتحقق.';
+    if (!body.match(/رقم\s*(?:العملية|المعاملة)/))
+      return 'لم يُعثر على رقم العملية — مطلوب للتحقق (مثال: "رقم العملية: 022896233255").';
     if (!body.match(/(?:مبلغ|مبلغ\s+قدره)/))
-      return 'لم يُعثر على المبلغ.';
-    return 'فشل استخراج البيانات — تنسيق الرسالة غير متوقع.';
+      return 'لم يُعثر على المبلغ في الرسالة.';
+    // فحص تنسيق التاريخ تحديداً
+    const hasDate = body.match(/(?:تاريخ\s+(?:العملية|المعاملة))\s*[:\s]\s*(\d{2}[\-\/]\d{2}[\-\/]\d{2,4}\s+\d{2}:\d{2}|\d{2}:\d{2}\s+\d{2}[\-\/]\d{2}[\-\/]\d{2,4})/);
+    if (!hasDate)
+      return 'لم يُعثر على تاريخ العملية بصيغة صحيحة. الصيغ المدعومة: "YY-MM-DD HH:MM" مثال (21-08-26 00:15) أو "HH:MM DD-MM-YY".';
+    return 'فشل استخراج البيانات — تنسيق الرسالة غير متوقع. تأكد من وجود: تم استلام / المبلغ / رقم المحفظة / تاريخ العملية / رقم العملية.';
   }
 
   if (provider === 'insta_pay') {
-    if (!isIPLooking) return 'الرسالة لا تنتمي لـ InstaPay / Banque Misr.';
+    if (!isIPLooking) return 'الرسالة لا تنتمي لـ InstaPay / Banque Misr (لا تحتوي على: instapay / اضافة مبلغ / التحويل اللحظي).';
     if (!body.match(/(?:مبلغ|amount)/i))
-      return 'لم يُعثر على المبلغ.';
+      return 'لم يُعثر على المبلغ (مثال: "مبلغ 300EGP").';
     if (!body.match(/(?:الى\s+حساب|حساب\s+رقم|to account)/i))
-      return 'لم يُعثر على رقم الحساب المستلم.';
+      return 'لم يُعثر على رقم الحساب المستلم (مثال: "الى حساب رقم xxx4449").';
     return 'فشل استخراج البيانات — تنسيق الرسالة غير متوقع.';
   }
 

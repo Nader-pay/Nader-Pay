@@ -48,9 +48,10 @@ function parseInstaPayDate(text: string): string | null {
     let year = parseInt(engMatch[3], 10);
     if (year < 100) year += 2000;
     if (mon === undefined) return null;
-    const d = new Date(year, mon, day);
-    if (isNaN(d.getTime())) return null;
-    return d.toISOString().slice(0, 10);
+    // استخدام Date.UTC لتجنب timezone offset
+    const ts = Date.UTC(year, mon, day);
+    if (isNaN(ts)) return null;
+    return new Date(ts).toISOString().slice(0, 10);
   }
 
   // نمط: dd/mm/yyyy أو dd-mm-yyyy
@@ -58,9 +59,10 @@ function parseInstaPayDate(text: string): string | null {
   if (numMatch) {
     let year = parseInt(numMatch[3], 10);
     if (year < 100) year += 2000;
-    const d = new Date(year, parseInt(numMatch[2], 10) - 1, parseInt(numMatch[1], 10));
-    if (isNaN(d.getTime())) return null;
-    return d.toISOString().slice(0, 10);
+    // استخدام Date.UTC لتجنب timezone offset
+    const ts = Date.UTC(year, parseInt(numMatch[2], 10) - 1, parseInt(numMatch[1], 10));
+    if (isNaN(ts)) return null;
+    return new Date(ts).toISOString().slice(0, 10);
   }
 
   return null;
@@ -123,10 +125,12 @@ export function parseInstaPaySms(message: string): ProviderParseResult | null {
   if (isNaN(amount) || amount <= 0) return null;
 
   // ─── حساب المستلم ───────────────────────────────────────────────────────
-  // نمط: "الى حساب رقم xxx4449" أو "حساب رقم 1234"
+  // بعد normalizeArabic: "الى"→"الي"، "إلى"→"الي" — يجب مطابقة الشكل المُعيَّر
+  // نمط: "الي حساب رقم xxx4449" أو "لحساب رقم 1234" أو "حساب xxx4449"
   const accountMatch =
-    norm.match(/(?:الى\s+حساب\s+(?:رقم\s+)?|لحساب\s+(?:رقم\s+)?)([xX\d]{4,20})/) ||
-    norm.match(/(?:حساب)\s+([xX\d]{4,20})/);
+    norm.match(/(?:الي\s+حساب\s+(?:رقم\s+)?|لحساب\s+(?:رقم\s+)?)([xX\d]{4,20})/) ||
+    norm.match(/(?:الى\s+حساب\s+(?:رقم\s+)?|to\s+account\s*(?:no\.?\s*)?)([xX\d]{4,20})/i) ||
+    norm.match(/(?:حساب)\s+(?:رقم\s+)?([xX\d]{4,20})/);
   if (!accountMatch) return null;
   const receiverAccount = accountMatch[1].trim();
 
