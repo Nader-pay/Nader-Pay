@@ -628,6 +628,73 @@ export const dbReady = SQLite.openDatabaseAsync(DB_NAME, DB_OPTIONS)
     }
   }
 
+  // ── Phase 5 Migration: payment_evidences + canonical_transactions + production_audit_trail ──
+  // جداول المرحلة الثانية — backward-compatible (CREATE IF NOT EXISTS + ALTER IF NOT EXISTS)
+  const hasPE5 = (await db.getAllAsync<{ name: string }>(
+    "SELECT name FROM sqlite_master WHERE type='table' AND name='payment_evidences'"
+  )).length > 0;
+  if (!hasPE5) {
+    await db.execAsync(`CREATE TABLE IF NOT EXISTS payment_evidences (
+      evidence_id TEXT PRIMARY KEY, evidence_type TEXT NOT NULL,
+      provider_id TEXT NOT NULL, order_id TEXT, transaction_id TEXT,
+      transaction_fingerprint TEXT, amount REAL, sender_phone TEXT,
+      receiver_account TEXT, receiver_wallet TEXT, source_identifier TEXT,
+      parser_id TEXT, parser_version TEXT, status TEXT NOT NULL DEFAULT 'pending',
+      reject_reason TEXT, canonical_id TEXT, raw_message TEXT,
+      normalized_payload TEXT,
+      received_at TEXT NOT NULL DEFAULT (datetime('now')),
+      created_at TEXT NOT NULL DEFAULT (datetime('now')))`);
+    await db.execAsync("CREATE INDEX IF NOT EXISTS idx_pe_order ON payment_evidences(order_id)");
+    await db.execAsync("CREATE INDEX IF NOT EXISTS idx_pe_fingerprint ON payment_evidences(transaction_fingerprint)");
+    await db.execAsync("CREATE INDEX IF NOT EXISTS idx_pe_status ON payment_evidences(status)");
+    await db.execAsync("CREATE INDEX IF NOT EXISTS idx_pe_canonical ON payment_evidences(canonical_id)");
+    await db.execAsync("CREATE INDEX IF NOT EXISTS idx_pe_received ON payment_evidences(received_at DESC)");
+  }
+  const hasCT5 = (await db.getAllAsync<{ name: string }>(
+    "SELECT name FROM sqlite_master WHERE type='table' AND name='canonical_transactions'"
+  )).length > 0;
+  if (!hasCT5) {
+    await db.execAsync(`CREATE TABLE IF NOT EXISTS canonical_transactions (
+      canonical_id TEXT PRIMARY KEY, provider_id TEXT NOT NULL,
+      matched_order_id TEXT, transaction_fingerprint TEXT NOT NULL,
+      amount REAL NOT NULL, currency TEXT NOT NULL DEFAULT 'EGP',
+      sender_phone TEXT, sender_name TEXT, receiver_account TEXT,
+      receiver_wallet TEXT, transaction_datetime TEXT,
+      has_sms INTEGER NOT NULL DEFAULT 0, has_notification INTEGER NOT NULL DEFAULT 0,
+      is_sufficient INTEGER NOT NULL DEFAULT 0, evidence_count INTEGER NOT NULL DEFAULT 1,
+      normalized_payload TEXT, match_code TEXT, match_score REAL,
+      first_evidence_at TEXT NOT NULL DEFAULT (datetime('now')),
+      confirmed_at TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')))`);
+    await db.execAsync("CREATE INDEX IF NOT EXISTS idx_ct_order ON canonical_transactions(matched_order_id)");
+    await db.execAsync("CREATE INDEX IF NOT EXISTS idx_ct_fingerprint ON canonical_transactions(transaction_fingerprint)");
+    await db.execAsync("CREATE INDEX IF NOT EXISTS idx_ct_created ON canonical_transactions(created_at DESC)");
+  }
+  const hasAT5 = (await db.getAllAsync<{ name: string }>(
+    "SELECT name FROM sqlite_master WHERE type='table' AND name='production_audit_trail'"
+  )).length > 0;
+  if (!hasAT5) {
+    await db.execAsync(`CREATE TABLE IF NOT EXISTS production_audit_trail (
+      id TEXT PRIMARY KEY, order_id TEXT, canonical_id TEXT, evidence_id TEXT,
+      provider_id TEXT NOT NULL, verification_code TEXT NOT NULL,
+      match_score REAL, final_action TEXT NOT NULL, source_type TEXT,
+      source_identifier TEXT, parser_version TEXT, transaction_fingerprint TEXT,
+      reason TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')))`);
+    await db.execAsync("CREATE INDEX IF NOT EXISTS idx_pat_order ON production_audit_trail(order_id)");
+    await db.execAsync("CREATE INDEX IF NOT EXISTS idx_pat_action ON production_audit_trail(final_action)");
+    await db.execAsync("CREATE INDEX IF NOT EXISTS idx_pat_created ON production_audit_trail(created_at DESC)");
+  }
+  // orders_cache: أعمدة المرحلة الثانية
+  const ocP5 = new Set((await db.getAllAsync<{ name: string }>("PRAGMA table_info('orders_cache')")).map((c) => c.name));
+  if (!ocP5.has('verification_code')) await db.execAsync("ALTER TABLE orders_cache ADD COLUMN verification_code TEXT");
+  if (!ocP5.has('canonical_id')) {
+    await db.execAsync("ALTER TABLE orders_cache ADD COLUMN canonical_id TEXT");
+    await db.execAsync("CREATE INDEX IF NOT EXISTS idx_orders_canonical ON orders_cache(canonical_id)");
+  }
+  if (!ocP5.has('verification_score')) await db.execAsync("ALTER TABLE orders_cache ADD COLUMN verification_score REAL");
+
   return db;
 });
 
@@ -1083,6 +1150,10 @@ export async function updateOrderLocal(
     reviewedBy?: string | null;
     reviewedAt?: string | null;
     reviewReason?: string | null;
+    // المرحلة الثانية
+    verificationCode?: string | null;
+    verificationScore?: number | null;
+    canonicalId?: string | null;
   }
 ): Promise<void> {
   const db = await dbReady;
@@ -1104,6 +1175,10 @@ export async function updateOrderLocal(
   if (updates.reviewedBy !== undefined) { fields.push('reviewed_by = ?'); values.push(updates.reviewedBy); }
   if (updates.reviewedAt !== undefined) { fields.push('reviewed_at = ?'); values.push(updates.reviewedAt); }
   if (updates.reviewReason !== undefined) { fields.push('review_reason = ?'); values.push(updates.reviewReason); }
+  // المرحلة الثانية — أعمدة verification جديدة
+  if (updates.verificationCode !== undefined) { fields.push('verification_code = ?'); values.push(updates.verificationCode); }
+  if (updates.verificationScore !== undefined) { fields.push('verification_score = ?'); values.push(updates.verificationScore); }
+  if (updates.canonicalId !== undefined) { fields.push('canonical_id = ?'); values.push(updates.canonicalId); }
   if (fields.length === 0) return;
   // دائماً نُحدّث updated_at عند أي تعديل محلي
   fields.push("updated_at = datetime('now')");
@@ -1809,4 +1884,443 @@ export async function recordAuditEvent(
     timestamp: new Date().toISOString(),
     ...details,
   });
+}
+
+// ====== Phase 2 DB helpers — payment_evidences, canonical_transactions, audit_trail ======
+
+export async function runPhase2Migration(): Promise<void> {
+  const db = await dbReady;
+
+  // ── payment_evidences: كل دليل دفع فردي (SMS أو Notification) ────────────
+  const hasPE = (await db.getAllAsync<{ name: string }>(
+    "SELECT name FROM sqlite_master WHERE type='table' AND name='payment_evidences'"
+  )).length > 0;
+  if (!hasPE) {
+    await db.execAsync(`
+      CREATE TABLE IF NOT EXISTS payment_evidences (
+        evidence_id        TEXT PRIMARY KEY,
+        evidence_type      TEXT NOT NULL CHECK (evidence_type IN ('sms','notification')),
+        provider_id        TEXT NOT NULL,
+        order_id           TEXT,
+        transaction_id     TEXT,
+        transaction_fingerprint TEXT,
+        amount             REAL,
+        sender_phone       TEXT,
+        receiver_account   TEXT,
+        receiver_wallet    TEXT,
+        source_identifier  TEXT,
+        parser_id          TEXT,
+        parser_version     TEXT,
+        status             TEXT NOT NULL DEFAULT 'pending',
+        reject_reason      TEXT,
+        canonical_id       TEXT,
+        raw_message        TEXT,
+        normalized_payload TEXT,
+        received_at        TEXT NOT NULL DEFAULT (datetime('now')),
+        created_at         TEXT NOT NULL DEFAULT (datetime('now'))
+      )
+    `);
+    await db.execAsync("CREATE INDEX IF NOT EXISTS idx_pe_order ON payment_evidences(order_id)");
+    await db.execAsync("CREATE INDEX IF NOT EXISTS idx_pe_fingerprint ON payment_evidences(transaction_fingerprint)");
+    await db.execAsync("CREATE INDEX IF NOT EXISTS idx_pe_provider ON payment_evidences(provider_id)");
+    await db.execAsync("CREATE INDEX IF NOT EXISTS idx_pe_status ON payment_evidences(status)");
+    await db.execAsync("CREATE INDEX IF NOT EXISTS idx_pe_canonical ON payment_evidences(canonical_id)");
+    await db.execAsync("CREATE INDEX IF NOT EXISTS idx_pe_received ON payment_evidences(received_at DESC)");
+  }
+
+  // ── canonical_transactions: المعاملة الموحدة بعد ربط الأدلة ───────────────
+  const hasCT = (await db.getAllAsync<{ name: string }>(
+    "SELECT name FROM sqlite_master WHERE type='table' AND name='canonical_transactions'"
+  )).length > 0;
+  if (!hasCT) {
+    await db.execAsync(`
+      CREATE TABLE IF NOT EXISTS canonical_transactions (
+        canonical_id           TEXT PRIMARY KEY,
+        provider_id            TEXT NOT NULL,
+        matched_order_id       TEXT,
+        transaction_fingerprint TEXT NOT NULL,
+        amount                 REAL NOT NULL,
+        currency               TEXT NOT NULL DEFAULT 'EGP',
+        sender_phone           TEXT,
+        sender_name            TEXT,
+        receiver_account       TEXT,
+        receiver_wallet        TEXT,
+        transaction_datetime   TEXT,
+        has_sms                INTEGER NOT NULL DEFAULT 0,
+        has_notification       INTEGER NOT NULL DEFAULT 0,
+        is_sufficient          INTEGER NOT NULL DEFAULT 0,
+        evidence_count         INTEGER NOT NULL DEFAULT 1,
+        normalized_payload     TEXT,
+        match_code             TEXT,
+        match_score            REAL,
+        first_evidence_at      TEXT NOT NULL DEFAULT (datetime('now')),
+        confirmed_at           TEXT,
+        created_at             TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at             TEXT NOT NULL DEFAULT (datetime('now'))
+      )
+    `);
+    await db.execAsync("CREATE INDEX IF NOT EXISTS idx_ct_order ON canonical_transactions(matched_order_id)");
+    await db.execAsync("CREATE INDEX IF NOT EXISTS idx_ct_fingerprint ON canonical_transactions(transaction_fingerprint)");
+    await db.execAsync("CREATE INDEX IF NOT EXISTS idx_ct_provider ON canonical_transactions(provider_id)");
+    await db.execAsync("CREATE INDEX IF NOT EXISTS idx_ct_created ON canonical_transactions(created_at DESC)");
+  }
+
+  // ── production_audit_trail: Audit entries كاملة مستقلة عن event_logs ───────
+  const hasAT = (await db.getAllAsync<{ name: string }>(
+    "SELECT name FROM sqlite_master WHERE type='table' AND name='production_audit_trail'"
+  )).length > 0;
+  if (!hasAT) {
+    await db.execAsync(`
+      CREATE TABLE IF NOT EXISTS production_audit_trail (
+        id                     TEXT PRIMARY KEY,
+        order_id               TEXT,
+        canonical_id           TEXT,
+        evidence_id            TEXT,
+        provider_id            TEXT NOT NULL,
+        verification_code      TEXT NOT NULL,
+        match_score            REAL,
+        final_action           TEXT NOT NULL,
+        source_type            TEXT,
+        source_identifier      TEXT,
+        parser_version         TEXT,
+        transaction_fingerprint TEXT,
+        reason                 TEXT,
+        created_at             TEXT NOT NULL DEFAULT (datetime('now'))
+      )
+    `);
+    await db.execAsync("CREATE INDEX IF NOT EXISTS idx_pat_order ON production_audit_trail(order_id)");
+    await db.execAsync("CREATE INDEX IF NOT EXISTS idx_pat_canonical ON production_audit_trail(canonical_id)");
+    await db.execAsync("CREATE INDEX IF NOT EXISTS idx_pat_action ON production_audit_trail(final_action)");
+    await db.execAsync("CREATE INDEX IF NOT EXISTS idx_pat_created ON production_audit_trail(created_at DESC)");
+  }
+
+  // ── orders_cache: إضافة verification_code + canonical_id ──────────────────
+  const ocCols5 = await db.getAllAsync<{ name: string }>("PRAGMA table_info('orders_cache')");
+  const ocColNames5 = new Set(ocCols5.map((c) => c.name));
+  if (!ocColNames5.has('verification_code')) {
+    await db.execAsync("ALTER TABLE orders_cache ADD COLUMN verification_code TEXT");
+  }
+  if (!ocColNames5.has('canonical_id')) {
+    await db.execAsync("ALTER TABLE orders_cache ADD COLUMN canonical_id TEXT");
+    await db.execAsync("CREATE INDEX IF NOT EXISTS idx_orders_canonical ON orders_cache(canonical_id)");
+  }
+  if (!ocColNames5.has('verification_score')) {
+    await db.execAsync("ALTER TABLE orders_cache ADD COLUMN verification_score REAL");
+  }
+}
+
+// ── Payment Evidence CRUD ─────────────────────────────────────────────────────
+
+export async function insertPaymentEvidence(ev: {
+  evidenceId: string;
+  evidenceType: 'sms' | 'notification';
+  providerId: string;
+  orderId?: string | null;
+  transactionId?: string | null;
+  transactionFingerprint?: string | null;
+  amount?: number | null;
+  senderPhone?: string | null;
+  receiverAccount?: string | null;
+  receiverWallet?: string | null;
+  sourceIdentifier?: string | null;
+  parserId?: string | null;
+  parserVersion?: string | null;
+  status?: string;
+  canonicalId?: string | null;
+  rawMessage?: string | null;
+  normalizedPayload?: unknown;
+  receivedAt?: string;
+}): Promise<void> {
+  const db = await dbReady;
+  await db.runAsync(
+    `INSERT OR IGNORE INTO payment_evidences
+       (evidence_id, evidence_type, provider_id, order_id, transaction_id,
+        transaction_fingerprint, amount, sender_phone, receiver_account,
+        receiver_wallet, source_identifier, parser_id, parser_version,
+        status, canonical_id, raw_message, normalized_payload, received_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    [
+      ev.evidenceId,
+      ev.evidenceType,
+      ev.providerId,
+      ev.orderId ?? null,
+      ev.transactionId ?? null,
+      ev.transactionFingerprint ?? null,
+      ev.amount ?? null,
+      ev.senderPhone ?? null,
+      ev.receiverAccount ?? null,
+      ev.receiverWallet ?? null,
+      ev.sourceIdentifier ?? null,
+      ev.parserId ?? null,
+      ev.parserVersion ?? null,
+      ev.status ?? 'pending',
+      ev.canonicalId ?? null,
+      ev.rawMessage ?? null,
+      ev.normalizedPayload ? JSON.stringify(ev.normalizedPayload) : null,
+      ev.receivedAt ?? new Date().toISOString(),
+    ]
+  );
+}
+
+export async function updateEvidenceStatus(
+  evidenceId: string,
+  status: string,
+  opts: { canonicalId?: string; orderId?: string; rejectReason?: string } = {}
+): Promise<void> {
+  const db = await dbReady;
+  await db.runAsync(
+    `UPDATE payment_evidences
+     SET status = ?,
+         canonical_id = COALESCE(?, canonical_id),
+         order_id = COALESCE(?, order_id)
+     WHERE evidence_id = ?`,
+    [status, opts.canonicalId ?? null, opts.orderId ?? null, evidenceId]
+  );
+}
+
+export async function getRecentEvidences(limit = 50): Promise<{
+  evidence_id: string;
+  evidence_type: string;
+  provider_id: string;
+  order_id: string | null;
+  amount: number | null;
+  status: string;
+  canonical_id: string | null;
+  received_at: string;
+}[]> {
+  const db = await dbReady;
+  return db.getAllAsync(
+    `SELECT evidence_id, evidence_type, provider_id, order_id, amount,
+            status, canonical_id, received_at
+     FROM payment_evidences
+     ORDER BY received_at DESC LIMIT ?`,
+    [limit]
+  ) as any;
+}
+
+// ── Canonical Transaction CRUD ────────────────────────────────────────────────
+
+export async function upsertCanonicalTransaction(ct: {
+  canonicalId: string;
+  providerId: string;
+  matchedOrderId?: string | null;
+  transactionFingerprint: string;
+  amount: number;
+  currency?: string;
+  senderPhone?: string | null;
+  senderName?: string | null;
+  receiverAccount?: string | null;
+  receiverWallet?: string | null;
+  transactionDatetime?: string | null;
+  hasSms: boolean;
+  hasNotification: boolean;
+  isSufficient: boolean;
+  evidenceCount?: number;
+  normalizedPayload?: unknown;
+  matchCode?: string | null;
+  matchScore?: number | null;
+  confirmedAt?: string | null;
+}): Promise<void> {
+  const db = await dbReady;
+  const now = new Date().toISOString();
+  await db.runAsync(
+    `INSERT INTO canonical_transactions
+       (canonical_id, provider_id, matched_order_id, transaction_fingerprint,
+        amount, currency, sender_phone, sender_name, receiver_account,
+        receiver_wallet, transaction_datetime, has_sms, has_notification,
+        is_sufficient, evidence_count, normalized_payload,
+        match_code, match_score, confirmed_at, first_evidence_at, updated_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+     ON CONFLICT(canonical_id) DO UPDATE SET
+       matched_order_id = COALESCE(excluded.matched_order_id, canonical_transactions.matched_order_id),
+       has_sms = excluded.has_sms,
+       has_notification = excluded.has_notification,
+       is_sufficient = excluded.is_sufficient,
+       evidence_count = excluded.evidence_count,
+       match_code = COALESCE(excluded.match_code, canonical_transactions.match_code),
+       match_score = COALESCE(excluded.match_score, canonical_transactions.match_score),
+       confirmed_at = COALESCE(excluded.confirmed_at, canonical_transactions.confirmed_at),
+       updated_at = excluded.updated_at`,
+    [
+      ct.canonicalId,
+      ct.providerId,
+      ct.matchedOrderId ?? null,
+      ct.transactionFingerprint,
+      ct.amount,
+      ct.currency ?? 'EGP',
+      ct.senderPhone ?? null,
+      ct.senderName ?? null,
+      ct.receiverAccount ?? null,
+      ct.receiverWallet ?? null,
+      ct.transactionDatetime ?? null,
+      ct.hasSms ? 1 : 0,
+      ct.hasNotification ? 1 : 0,
+      ct.isSufficient ? 1 : 0,
+      ct.evidenceCount ?? 1,
+      ct.normalizedPayload ? JSON.stringify(ct.normalizedPayload) : null,
+      ct.matchCode ?? null,
+      ct.matchScore ?? null,
+      ct.confirmedAt ?? null,
+      now,
+      now,
+    ]
+  );
+}
+
+export async function getCanonicalByFingerprint(fingerprint: string): Promise<{
+  canonical_id: string;
+  provider_id: string;
+  matched_order_id: string | null;
+  match_code: string | null;
+  match_score: number | null;
+  is_sufficient: number;
+  confirmed_at: string | null;
+} | null> {
+  const db = await dbReady;
+  return db.getFirstAsync(
+    `SELECT canonical_id, provider_id, matched_order_id, match_code, match_score,
+            is_sufficient, confirmed_at
+     FROM canonical_transactions WHERE transaction_fingerprint = ?`,
+    [fingerprint]
+  ) as any;
+}
+
+export async function getRecentCanonicals(limit = 50): Promise<{
+  canonical_id: string;
+  provider_id: string;
+  matched_order_id: string | null;
+  amount: number;
+  currency: string;
+  has_sms: number;
+  has_notification: number;
+  is_sufficient: number;
+  match_code: string | null;
+  match_score: number | null;
+  confirmed_at: string | null;
+  created_at: string;
+}[]> {
+  const db = await dbReady;
+  return db.getAllAsync(
+    `SELECT canonical_id, provider_id, matched_order_id, amount, currency,
+            has_sms, has_notification, is_sufficient, match_code, match_score,
+            confirmed_at, created_at
+     FROM canonical_transactions
+     ORDER BY created_at DESC LIMIT ?`,
+    [limit]
+  ) as any;
+}
+
+// ── Production Audit Trail ────────────────────────────────────────────────────
+
+export async function insertAuditTrailEntry(entry: {
+  orderId?: string | null;
+  canonicalId?: string | null;
+  evidenceId?: string | null;
+  providerId: string;
+  verificationCode: string;
+  matchScore?: number | null;
+  finalAction: string;
+  sourceType?: string | null;
+  sourceIdentifier?: string | null;
+  parserVersion?: string | null;
+  transactionFingerprint?: string | null;
+  reason?: string | null;
+}): Promise<void> {
+  const db = await dbReady;
+  const id = `pat:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
+  await db.runAsync(
+    `INSERT INTO production_audit_trail
+       (id, order_id, canonical_id, evidence_id, provider_id,
+        verification_code, match_score, final_action, source_type,
+        source_identifier, parser_version, transaction_fingerprint, reason)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    [
+      id,
+      entry.orderId ?? null,
+      entry.canonicalId ?? null,
+      entry.evidenceId ?? null,
+      entry.providerId,
+      entry.verificationCode,
+      entry.matchScore ?? null,
+      entry.finalAction,
+      entry.sourceType ?? null,
+      entry.sourceIdentifier ?? null,
+      entry.parserVersion ?? null,
+      entry.transactionFingerprint ?? null,
+      entry.reason ?? null,
+    ]
+  );
+}
+
+export async function getAuditTrail(orderId?: string, limit = 50): Promise<{
+  id: string;
+  order_id: string | null;
+  canonical_id: string | null;
+  provider_id: string;
+  verification_code: string;
+  match_score: number | null;
+  final_action: string;
+  reason: string | null;
+  created_at: string;
+}[]> {
+  const db = await dbReady;
+  if (orderId) {
+    return db.getAllAsync(
+      `SELECT id, order_id, canonical_id, provider_id, verification_code,
+              match_score, final_action, reason, created_at
+       FROM production_audit_trail WHERE order_id = ?
+       ORDER BY created_at DESC LIMIT ?`,
+      [orderId, limit]
+    ) as any;
+  }
+  return db.getAllAsync(
+    `SELECT id, order_id, canonical_id, provider_id, verification_code,
+            match_score, final_action, reason, created_at
+     FROM production_audit_trail
+     ORDER BY created_at DESC LIMIT ?`,
+    [limit]
+  ) as any;
+}
+
+export async function getVerificationStats(): Promise<{
+  total_evidences: number;
+  confirmed_evidences: number;
+  rejected_evidences: number;
+  total_canonicals: number;
+  confirmed_canonicals: number;
+  duplicate_count: number;
+  no_match_count: number;
+}> {
+  const db = await dbReady;
+  const evidences = await db.getFirstAsync<{
+    total: number; confirmed: number; rejected: number;
+  }>(
+    `SELECT COUNT(*) as total,
+            SUM(CASE WHEN status='linked' THEN 1 ELSE 0 END) as confirmed,
+            SUM(CASE WHEN status='rejected' THEN 1 ELSE 0 END) as rejected
+     FROM payment_evidences`
+  );
+  const canonicals = await db.getFirstAsync<{
+    total: number; confirmed: number;
+  }>(
+    `SELECT COUNT(*) as total,
+            SUM(CASE WHEN confirmed_at IS NOT NULL THEN 1 ELSE 0 END) as confirmed
+     FROM canonical_transactions`
+  );
+  const auditStats = await db.getFirstAsync<{
+    dups: number; nomatches: number;
+  }>(
+    `SELECT SUM(CASE WHEN verification_code='DUPLICATE_TRANSACTION' THEN 1 ELSE 0 END) as dups,
+            SUM(CASE WHEN verification_code='NO_MATCH' THEN 1 ELSE 0 END) as nomatches
+     FROM production_audit_trail`
+  );
+  return {
+    total_evidences: evidences?.total ?? 0,
+    confirmed_evidences: evidences?.confirmed ?? 0,
+    rejected_evidences: evidences?.rejected ?? 0,
+    total_canonicals: canonicals?.total ?? 0,
+    confirmed_canonicals: canonicals?.confirmed ?? 0,
+    duplicate_count: auditStats?.dups ?? 0,
+    no_match_count: auditStats?.nomatches ?? 0,
+  };
 }

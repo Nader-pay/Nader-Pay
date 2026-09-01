@@ -3,10 +3,14 @@ import { ActivityIndicator, Pressable, ScrollView, Text, TextInput, View } from 
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { ArrowRight, Check, RefreshCw, X, MessageSquare, FileText, AlertCircle, History, ShieldAlert, Shield, CheckCircle2, XCircle } from 'lucide-react-native';
+import {
+  ArrowRight, Check, RefreshCw, X, MessageSquare, FileText,
+  AlertCircle, History, ShieldAlert, Shield, CheckCircle2, XCircle,
+  Loader, Clock, ShieldCheck, ShieldX, Eye,
+} from 'lucide-react-native';
 
 import { useAgent } from '@/contexts/AgentContext';
-import { getOrderById, getVerificationLogs, getOrderTimeline } from '@/lib/database';
+import { getOrderById, getVerificationLogs, getOrderTimeline, getAuditTrail } from '@/lib/database';
 import type { AgentOrderStatus } from '@/types/agent';
 
 export default function OrderDetailScreen() {
@@ -53,6 +57,10 @@ export default function OrderDetailScreen() {
 
   const [logs, setLogs] = useState<{ action: string; result: string | null; reason: string | null; created_at: string }[]>([]);
   const [timeline, setTimeline] = useState<{ stage: string; status: string; reason: string | null; created_at: string }[]>([]);
+  const [auditTrail, setAuditTrail] = useState<{
+    id: string; verification_code: string; match_score: number | null;
+    final_action: string; reason: string | null; created_at: string;
+  }[]>([]);
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState<'confirm' | 'reject' | 'rescan' | null>(null);
   const [rejectReason, setRejectReason] = useState('');
@@ -105,10 +113,14 @@ export default function OrderDetailScreen() {
         sourceVerified: Boolean(parsed.sourceVerified),
         duplicate: Boolean(parsed.duplicate),
       } : null);
-      const logRows = await getVerificationLogs(id);
+      const [logRows, timelineRows, auditRows] = await Promise.all([
+        getVerificationLogs(id),
+        getOrderTimeline(id),
+        getAuditTrail(id, 20),
+      ]);
       setLogs(logRows.map((l) => ({ action: l.action, result: l.result, reason: l.reason, created_at: l.created_at })));
-      const timelineRows = await getOrderTimeline(id);
       setTimeline(timelineRows.map((t) => ({ stage: t.stage, status: t.status, reason: t.reason, created_at: t.created_at })));
+      setAuditTrail(auditRows);
     }
     setLoading(false);
   }, [id]);
@@ -146,6 +158,10 @@ export default function OrderDetailScreen() {
 
   const status = orderStatusMeta(order?.local_status as AgentOrderStatus);
 
+  // حالة التحقق من المرحلة الثانية
+  const verificationCode = (order as any)?.verification_code as string | undefined;
+  const verificationScore = (order as any)?.verification_score as number | undefined;
+
   return (
     <View className="flex-1 bg-background" style={{ paddingTop: insets.top }}>
       <StatusBar style="dark" backgroundColor="#ffffff" />
@@ -166,6 +182,15 @@ export default function OrderDetailScreen() {
           </View>
         ) : (
           <View className="gap-5 pb-8">
+
+            {/* ── شريط حالة التحقق — المرحلة الثانية ── */}
+            <VerificationStatusBar
+              localStatus={order.local_status}
+              verificationCode={verificationCode}
+              matchScore={verificationScore ?? order.match_score ?? undefined}
+            />
+
+            {/* ── بيانات الطلب الأساسية ── */}
             <View className="px-4 py-5 border border-border rounded-2xl bg-card gap-3">
               <View className="flex-row justify-between items-start">
                 <View>
@@ -191,12 +216,16 @@ export default function OrderDetailScreen() {
                 <InfoRow label="اسم المرسل" value={order.expected_sender_name || '—'} />
                 <InfoRow label="محفظة المستلم" value={order.expected_recipient_wallet || '—'} />
                 <InfoRow label="مزود الدفع" value={order.provider || '—'} />
-                {order.match_score !== null && order.match_score !== undefined && (
-                  <InfoRow label="نقاط التطابق" value={String(order.match_score)} />
+                {verificationCode && (
+                  <InfoRow label="كود التحقق" value={verificationCodeLabel(verificationCode)} />
+                )}
+                {(verificationScore ?? order.match_score) != null && (
+                  <InfoRow label="درجة المطابقة" value={`${Math.round((verificationScore ?? order.match_score ?? 0) * 10) / 10} / 100`} />
                 )}
               </View>
             </View>
 
+            {/* ── الرسالة المطابقة ── */}
             {order.raw_sms && (
               <View className="px-4 py-5 border border-border rounded-2xl bg-card gap-3">
                 <View className="flex-row items-center gap-2">
@@ -209,6 +238,7 @@ export default function OrderDetailScreen() {
               </View>
             )}
 
+            {/* ── فحوصات التحقق ── */}
             {verified && (
               <View className="px-4 py-5 border border-border rounded-2xl bg-card gap-3">
                 <View className="flex-row items-center gap-2">
@@ -223,11 +253,12 @@ export default function OrderDetailScreen() {
                 <CheckRow label="مصدر الرسالة" ok={verified.sourceVerified} expected="موثوق" actual={verified.sourceVerified ? 'موثوق' : 'غير موثوق'} />
                 <CheckRow label="التكرار" ok={!verified.duplicate} expected="غير مكرر" actual={verified.duplicate ? 'مكرر' : 'غير مكرر'} />
                 <Text className="text-xs text-muted-foreground mt-1">
-                  وقت استلام الرسالة: {order.message_received_at ? formatDate(order.message_received_at) : verified?.rawMessage ? '—' : '—'}
+                  وقت استلام الرسالة: {order.message_received_at ? formatDate(order.message_received_at) : '—'}
                 </Text>
               </View>
             )}
 
+            {/* ── مراجعة يدوية ── */}
             {order.local_status === 'review_required' && (
               <View className="px-4 py-5 border border-border rounded-2xl bg-card gap-3">
                 <View className="flex-row items-center gap-2">
@@ -237,6 +268,13 @@ export default function OrderDetailScreen() {
                 <Text className="text-sm text-muted-foreground leading-5">
                   هذا الطلب يتطلب مراجعة يدوية. تأكد من استلام المبلغ قبل الموافقة.
                 </Text>
+                {verificationCode && (
+                  <View className="px-3 py-2 rounded-xl" style={{ backgroundColor: '#fff7ed' }}>
+                    <Text className="text-xs font-medium" style={{ color: '#9a3412' }}>
+                      سبب الإحالة: {verificationCodeLabel(verificationCode)}
+                    </Text>
+                  </View>
+                )}
                 <TextInput
                   value={reviewNote}
                   onChangeText={setReviewNote}
@@ -277,6 +315,43 @@ export default function OrderDetailScreen() {
               </View>
             )}
 
+            {/* ── سجل Audit Trail (المرحلة الثانية) ── */}
+            {auditTrail.length > 0 && (
+              <View className="px-4 py-5 border border-border rounded-2xl bg-card gap-3">
+                <View className="flex-row items-center gap-2">
+                  <Eye size={18} color="#6b7280" />
+                  <Text className="text-sm font-semibold text-foreground">سجل محرك التحقق</Text>
+                </View>
+                <View className="gap-3">
+                  {auditTrail.map((entry) => (
+                    <View key={entry.id} className="flex-row justify-between gap-3 pb-3 border-b border-border last:border-b-0">
+                      <View className="flex-1 gap-0.5">
+                        <View className="flex-row items-center gap-1.5">
+                          {entry.final_action === 'confirmed'
+                            ? <ShieldCheck size={13} color="#22c55e" />
+                            : entry.final_action === 'duplicate'
+                              ? <ShieldX size={13} color="#a855f7" />
+                              : entry.final_action === 'review_required'
+                                ? <ShieldAlert size={13} color="#f59e0b" />
+                                : <ShieldX size={13} color="#ef4444" />}
+                          <Text className="text-sm text-foreground">{auditActionLabel(entry.final_action)}</Text>
+                        </View>
+                        <Text className="text-xs text-muted-foreground">{verificationCodeLabel(entry.verification_code)}</Text>
+                        {entry.match_score != null && (
+                          <Text className="text-xs text-muted-foreground">نقاط: {Math.round(entry.match_score)}</Text>
+                        )}
+                        {entry.reason && (
+                          <Text className="text-xs text-muted-foreground" numberOfLines={2}>{entry.reason}</Text>
+                        )}
+                      </View>
+                      <Text className="text-xs text-muted-foreground">{formatDate(entry.created_at)}</Text>
+                    </View>
+                  ))}
+                </View>
+              </View>
+            )}
+
+            {/* ── سجل التحقق التقليدي ── */}
             <View className="px-4 py-5 border border-border rounded-2xl bg-card gap-3">
               <View className="flex-row items-center gap-2">
                 <FileText size={18} color="#6b7280" />
@@ -301,6 +376,7 @@ export default function OrderDetailScreen() {
               )}
             </View>
 
+            {/* ── الخط الزمني ── */}
             <View className="px-4 py-5 border border-border rounded-2xl bg-card gap-3">
               <View className="flex-row items-center gap-2">
                 <History size={18} color="#6b7280" />
@@ -313,13 +389,8 @@ export default function OrderDetailScreen() {
                   {timeline.map((t, idx) => (
                     <View key={idx} className="flex-row gap-3">
                       <View className="items-center gap-1">
-                        <View
-                          className="w-3 h-3 rounded-full"
-                          style={{ backgroundColor: stageColor(t.status) }}
-                        />
-                        {idx < timeline.length - 1 && (
-                          <View className="w-px flex-1 bg-border" />
-                        )}
+                        <View className="w-3 h-3 rounded-full" style={{ backgroundColor: stageColor(t.status) }} />
+                        {idx < timeline.length - 1 && <View className="w-px flex-1 bg-border" />}
                       </View>
                       <View className="flex-1 pb-2">
                         <Text className="text-sm text-foreground">{stageLabel(t.stage)}</Text>
@@ -332,6 +403,7 @@ export default function OrderDetailScreen() {
               )}
             </View>
 
+            {/* ── أزرار الإجراءات ── */}
             <View className="gap-3">
               {(order.local_status === 'matched' || order.local_status === 'review_required') && (
                 <>
@@ -453,21 +525,136 @@ function orderStatusMeta(status: AgentOrderStatus | undefined) {
     case 'expired':
       return { label: 'منتهي', bgColor: '#f3f4f6', textColor: '#374151' };
     case 'matched':
-      return { label: 'مطابق', bgColor: '#fef3c7', textColor: '#92400e' };
+      return { label: 'تم اكتشاف معاملة', bgColor: '#fef3c7', textColor: '#92400e' };
     case 'review_required':
-      return { label: 'يتطلب مراجعة', bgColor: '#ffedd5', textColor: '#9a3412' };
+      return { label: 'بحاجة إلى مراجعة', bgColor: '#ffedd5', textColor: '#9a3412' };
     case 'scanning':
-      return { label: 'جاري البحث', bgColor: '#dbeafe', textColor: '#1e40af' };
+      return { label: 'جاري التحقق', bgColor: '#dbeafe', textColor: '#1e40af' };
     case 'sync_pending':
       return { label: 'بانتظار المزامنة', bgColor: '#e0e7ff', textColor: '#3730a3' };
     case 'error':
-      return { label: 'خطأ', bgColor: '#fee2e2', textColor: '#991b1b' };
+      return { label: 'تم رفض التحقق', bgColor: '#fee2e2', textColor: '#991b1b' };
     case 'duplicate':
       return { label: 'مكرر', bgColor: '#f3e8ff', textColor: '#6b21a8' };
     case 'new':
     default:
       return { label: 'جديد', bgColor: '#f3f4f6', textColor: '#374151' };
   }
+}
+
+// مكوّن شريط حالة التحقق — المرحلة الثانية
+function VerificationStatusBar({
+  localStatus,
+  verificationCode,
+  matchScore,
+}: {
+  localStatus: string | null;
+  verificationCode?: string;
+  matchScore?: number;
+}) {
+  const steps: { key: string; label: string }[] = [
+    { key: 'scanning',         label: 'جاري التحقق' },
+    { key: 'matched',          label: 'تم اكتشاف معاملة' },
+    { key: 'confirmed_local',  label: 'تم التحقق' },
+    { key: 'confirmed',        label: 'تم التأكيد' },
+  ];
+
+  const specialStates: Record<string, { label: string; icon: React.ReactNode; bg: string; text: string }> = {
+    review_required: { label: 'بحاجة إلى مراجعة', icon: <ShieldAlert size={14} color="#9a3412" />, bg: '#ffedd5', text: '#9a3412' },
+    rejected:        { label: 'تم رفض التحقق',    icon: <ShieldX    size={14} color="#991b1b" />, bg: '#fee2e2', text: '#991b1b' },
+    rejected_local:  { label: 'تم الرفض محليًا',  icon: <ShieldX    size={14} color="#991b1b" />, bg: '#fee2e2', text: '#991b1b' },
+    error:           { label: 'تم رفض التحقق',    icon: <ShieldX    size={14} color="#991b1b" />, bg: '#fee2e2', text: '#991b1b' },
+    duplicate:       { label: 'معاملة مكررة',      icon: <ShieldX    size={14} color="#6b21a8" />, bg: '#f3e8ff', text: '#6b21a8' },
+  };
+
+  if (localStatus && specialStates[localStatus]) {
+    const s = specialStates[localStatus];
+    return (
+      <View className="px-4 py-4 rounded-2xl border border-border" style={{ backgroundColor: s.bg }}>
+        <View className="flex-row items-center gap-2">
+          {s.icon}
+          <Text className="text-sm font-semibold" style={{ color: s.text }}>{s.label}</Text>
+        </View>
+        {verificationCode && (
+          <Text className="text-xs mt-1" style={{ color: s.text }}>{verificationCodeLabel(verificationCode)}</Text>
+        )}
+      </View>
+    );
+  }
+
+  const stepIndex = steps.findIndex((s) => s.key === localStatus);
+  const activeIndex = stepIndex >= 0 ? stepIndex : 0;
+
+  return (
+    <View className="px-4 py-4 border border-border rounded-2xl bg-card">
+      <Text className="text-xs text-muted-foreground mb-3">مسار التحقق</Text>
+      <View className="flex-row items-center">
+        {steps.map((step, idx) => (
+          <View key={step.key} className="flex-row items-center flex-1">
+            <View className="items-center gap-1 flex-1">
+              <View
+                className="w-6 h-6 rounded-full items-center justify-center"
+                style={{
+                  backgroundColor: idx < activeIndex ? '#22c55e'
+                    : idx === activeIndex ? '#3b82f6'
+                    : '#e5e7eb',
+                }}
+              >
+                {idx < activeIndex
+                  ? <Check size={12} color="#fff" />
+                  : idx === activeIndex
+                    ? <Loader size={12} color="#fff" />
+                    : <Clock size={12} color="#9ca3af" />}
+              </View>
+              <Text className="text-xs text-center" style={{ color: idx <= activeIndex ? '#111827' : '#9ca3af' }} numberOfLines={2}>
+                {step.label}
+              </Text>
+            </View>
+            {idx < steps.length - 1 && (
+              <View className="h-px flex-1 mx-1 mb-4" style={{ backgroundColor: idx < activeIndex ? '#22c55e' : '#e5e7eb' }} />
+            )}
+          </View>
+        ))}
+      </View>
+      {matchScore != null && (
+        <Text className="text-xs text-muted-foreground mt-2 text-center">
+          درجة المطابقة: {Math.round(matchScore)} / 100
+        </Text>
+      )}
+    </View>
+  );
+}
+
+function verificationCodeLabel(code: string): string {
+  const map: Record<string, string> = {
+    EXACT_MATCH:             'تطابق دقيق',
+    PARTIAL_MATCH:           'تطابق جزئي',
+    AMOUNT_MISMATCH:         'المبلغ غير متطابق',
+    ACCOUNT_MISMATCH:        'الحساب غير متطابق',
+    SENDER_MISMATCH:         'المرسل غير متطابق',
+    PROVIDER_MISMATCH:       'المزود غير متطابق',
+    SOURCE_NOT_TRUSTED:      'المصدر غير موثوق',
+    TRANSACTION_TOO_OLD:     'المعاملة قديمة جداً',
+    TRANSACTION_IN_FUTURE:   'المعاملة في المستقبل',
+    DUPLICATE_TRANSACTION:   'معاملة مكررة',
+    ALREADY_USED:            'تم استخدام المعاملة',
+    INVALID_PAYMENT_MESSAGE: 'رسالة دفع غير صالحة',
+    UNSUPPORTED_MESSAGE:     'رسالة غير مدعومة',
+    INSUFFICIENT_EVIDENCE:   'أدلة غير كافية',
+    NO_MATCH:                'لا يوجد تطابق',
+  };
+  return map[code] ?? code;
+}
+
+function auditActionLabel(action: string): string {
+  const map: Record<string, string> = {
+    confirmed:        'تم التأكيد',
+    rejected:         'تم الرفض',
+    review_required:  'أُحيل للمراجعة',
+    duplicate:        'مكرر',
+    ignored:          'تم التجاهل',
+  };
+  return map[action] ?? action;
 }
 
 function actionLabel(action: string): string {

@@ -32,6 +32,8 @@ import {
   getRuntimeSnapshot,
 } from '@/services/agentRuntime';
 import { verifyMessageSource } from '@/services/sourceVerification';
+import { processSmsMessage, processNotificationMessage } from '@/services/verificationPipeline';
+import type { PipelineOutcome } from '@/services/verificationPipeline';
 import { registerBackgroundSync, unregisterBackgroundSync, startForegroundService, stopForegroundService } from '@/services/backgroundAgent';
 import { getPermissionSnapshot, requestSmsPermission } from '@/services/permissionManager';
 import { buildStatusSnapshot } from '@/services/statusEngine';
@@ -471,126 +473,135 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
   const handleMessage = useCallback(
     async (message: SmsMessage, currentSettings = settings, currentDevice = deviceState) => {
       await indexSmsMessage(message);
-      await addTimelineStage('', 'SMS_INDEXED', 'completed', 'تم فهرسة الرسالة محليًا');
       setState((s) => ({ ...s, diagnostics: { ...s.diagnostics, lastSmsAt: message.date } }));
-
-      // التحقق من مصدر الرسالة قبل المعالجة (غير متزامن ضد مصادر موثقة في DB)
-      const sourceCheck = await verifyMessageSource(message, currentSettings.requireSourceVerification);
-      if (!sourceCheck.ok) {
-        await logVerification('', 'source_untrusted', 'rejected', sourceCheck.reason, undefined, message.id);
-        return;
-      }
-
-      const transaction = parseAnySms(message.body);
-      if (!transaction) return;
-
-      // التحقق من مطابقة نوع المصدر الموثق بنوع المزود المكتشف في الرسالة
-      if (currentSettings.requireSourceVerification && sourceCheck.provider !== 'unknown') {
-        if (sourceCheck.provider !== transaction.provider) {
-          await logVerification(
-            '',
-            'provider_mismatch',
-            'rejected',
-            `المصدر الموثق ${sourceCheck.provider} لا يطابق مزود الرسالة ${transaction.provider}`,
-            transaction,
-            transaction.transactionId
-          );
-          return;
-        }
-        transaction.sourceVerification = 'verified';
-      }
-
-      // deduplication على مستوى transactionId — يمنع معالجة نفس الرسالة مرتين
-      if (transaction.transactionId && await isTransactionProcessed(transaction.transactionId)) {
-        await logDiagnosticEvent('sms_duplicate', `معالجة مكررة: ${transaction.transactionId}`, {
-          severity: 'INFO', module: 'matching', dedupKey: `sms_dup:${transaction.transactionId}`
-        });
-        return;
-      }
-
-      const txDate = new Date(transaction.occurredAt).getTime();
-      const now = Date.now();
-      if (Number.isNaN(txDate) || now - txDate > currentSettings.maxSearchWindowHours * 60 * 60 * 1000) {
-        if (transaction.transactionId) {
-          await upsertProcessedTransaction(transaction.transactionId, transaction.provider ?? 'vodafone_cash', null, 'expired');
-        }
-        await logVerification('', 'sms_expired', 'rejected', 'خارج نافذة البحث', undefined, transaction.transactionId);
-        return;
-      }
 
       const pending = pendingOrdersRef.current.filter((o) =>
         ['new', 'scanning', 'matched', 'review_required'].includes(o.localStatus ?? 'new')
       );
 
-      const best = findBestMatch(transaction, pending, {
-        maxAmountTolerance: currentSettings.maxAmountTolerance,
-        searchWindowHours: currentSettings.maxSearchWindowHours,
-        minMatchScore: currentSettings.minMatchScore,
-        requireSourceVerification: currentSettings.requireSourceVerification,
-      });
-      if (!best) {
-        if (transaction.transactionId) {
-          await upsertProcessedTransaction(transaction.transactionId, transaction.provider ?? 'vodafone_cash', null, 'no_match');
-        }
-        await logVerification('', 'sms_no_match', 'no_match', 'لا يوجد طلب مطابق', undefined, transaction.transactionId);
-        return;
-      }
-
-      await addTimelineStage(best.order.id, 'PARSING', 'completed', transaction.provider);
-      await addTimelineStage(best.order.id, 'VALIDATING', 'completed', `درجة التطابق: ${best.score}`);
-      await addTimelineStage(best.order.id, 'DUPLICATE_CHECK', 'completed', 'لم يتم العثور على تكرار');
-
-      // تسجيل sms_received_at و processed_at للطلب
-      await setOrderTimestamp(best.order.id, 'sms_received_at', message.date || new Date().toISOString());
-      await setOrderTimestamp(best.order.id, 'processed_at', new Date().toISOString());
-
-      // تحديث match_status في SMS index
-      const smsIndexId = (transaction as any)._smsIndexId;
-      if (smsIndexId) {
-        await markSmsSentToOrder(smsIndexId, best.order.id);
-      }
-
-      if (!best.confirmed) {
-        if (transaction.transactionId) {
-          await upsertProcessedTransaction(transaction.transactionId, transaction.provider ?? 'vodafone_cash', best.order.id, 'pending');
-        }
-        await updateOrderLocal(best.order.id, {
-          localStatus: 'review_required',
-          matchScore: best.score,
-          rawSms: transaction.rawMessage,
-          matchedTransaction: JSON.stringify(transaction),
-          syncStatus: 'pending',
+      // ── Production Verification Pipeline (المرحلة الثانية) ─────────────────
+      let outcome: PipelineOutcome;
+      try {
+        outcome = await processSmsMessage(message, pending, {
+          requireSourceVerification: currentSettings.requireSourceVerification,
+          autoConfirm: currentSettings.autoConfirm,
+          maxAmountTolerance: currentSettings.maxAmountTolerance,
+          requireSenderPhone: false,
         });
-        await addTimelineStage(best.order.id, 'REVIEW_REQUIRED', 'current', `تطابق غامض: ${best.reasons.join(' • ')}`);
-        await emitNotification('Nader Pay', 'تطابق جزئي، يحتاج مراجعة', { orderId: best.order.id });
+      } catch (pipelineErr) {
+        await logEvent('pipeline_error', pipelineErr instanceof Error ? pipelineErr.message : 'خطأ في pipeline', {
+          address: message.originatingAddress,
+        });
+        // fallback آمن — لا نكسر تدفق المعالجة
         return;
       }
 
-      if (transaction.transactionId) {
-        await upsertProcessedTransaction(transaction.transactionId, transaction.provider ?? 'vodafone_cash', best.order.id, 'pending');
+      // ── معالجة نتيجة Pipeline ───────────────────────────────────────────────
+      switch (outcome.action) {
+        case 'SOURCE_REJECTED':
+          await logVerification('', 'source_untrusted', 'rejected', outcome.reason, undefined, message.id);
+          return;
+
+        case 'PARSE_FAILED':
+          return;
+
+        case 'PROVIDER_NOT_CONFIGURED':
+          await logVerification('', 'provider_not_configured', 'rejected',
+            `Provider ${outcome.provider} غير مهيأ بالكامل`, undefined, message.id
+          );
+          return;
+
+        case 'INSUFFICIENT_EVIDENCE':
+          await logVerification('', 'insufficient_evidence', 'pending',
+            'أدلة غير كافية — بانتظار دليل إضافي', undefined, message.id
+          );
+          return;
+
+        case 'DUPLICATE':
+          await logDiagnosticEvent('sms_duplicate', `معالجة مكررة: ${outcome.fingerprint}`, {
+            severity: 'INFO', module: 'matching', dedupKey: `sms_dup:${outcome.fingerprint}`,
+          });
+          return;
+
+        case 'NO_MATCH':
+          await logVerification('', 'sms_no_match', 'no_match',
+            `${outcome.matchCode}: ${outcome.reasons.join(' • ')}`, undefined, message.id
+          );
+          return;
+
+        case 'REVIEW': {
+          await setOrderTimestamp(outcome.orderId, 'sms_received_at', message.date || new Date().toISOString());
+          await updateOrderLocal(outcome.orderId, {
+            localStatus: 'review_required',
+            matchScore: outcome.score,
+            rawSms: message.body,
+            verificationCode: outcome.matchCode,
+            verificationScore: outcome.score,
+            syncStatus: 'pending',
+          } as any);
+          await emitNotification('Nader Pay', 'تطابق جزئي، يحتاج مراجعة', { orderId: outcome.orderId });
+          await logVerification(outcome.orderId, 'match_partial', 'review_required',
+            `${outcome.matchCode}: ${outcome.reasons.join(' • ')}`, undefined, message.id
+          );
+          return;
+        }
+
+        case 'CONFIRMED': {
+          await setOrderTimestamp(outcome.orderId, 'sms_received_at', message.date || new Date().toISOString());
+          await setOrderTimestamp(outcome.orderId, 'processed_at', new Date().toISOString());
+          await updateOrderLocal(outcome.orderId, {
+            localStatus: 'matched',
+            matchScore: outcome.score,
+            rawSms: message.body,
+            verificationCode: outcome.matchCode,
+            verificationScore: outcome.score,
+            canonicalId: outcome.canonical.canonicalId,
+            matchedTransaction: JSON.stringify({
+              transactionId: outcome.canonical.normalized.transactionId,
+              amount: outcome.canonical.normalized.amount,
+              currency: outcome.canonical.normalized.currency,
+              senderPhone: outcome.canonical.normalized.senderPhone,
+              senderName: outcome.canonical.normalized.senderName,
+              receiverPhone: outcome.canonical.normalized.receiverWallet ?? outcome.canonical.normalized.receiverAccount,
+              sourceVerified: true,
+              duplicate: false,
+              parserId: outcome.canonical.normalized.parserId,
+            }),
+            syncStatus: 'pending',
+          } as any);
+
+          await emitNotification('Nader Pay', 'تم التحقق من الدفع', { orderId: outcome.orderId });
+          await logVerification(outcome.orderId, 'match', 'matched',
+            `${outcome.matchCode} | score=${outcome.score}`, undefined, message.id
+          );
+
+          setState((s) => ({
+            ...s,
+            recentMatches: [
+              { order: pending.find((o) => o.id === (outcome as any).orderId) ?? null, score: outcome.score, confirmed: true, reasons: [outcome.matchCode] } as any,
+              ...s.recentMatches,
+            ].slice(0, 50),
+          }));
+
+          // إرسال دليل الدفع للـ Backend
+          if (currentSettings.autoConfirm) {
+            const orderRow = pending.find((o) => o.id === outcome.orderId);
+            if (orderRow) {
+              await sendEvidence(orderRow, {
+                transactionId: outcome.canonical.normalized.transactionId,
+                amount: outcome.canonical.normalized.amount,
+                currency: outcome.canonical.normalized.currency,
+                senderPhone: outcome.canonical.normalized.senderPhone,
+                receiverPhone: outcome.canonical.normalized.receiverWallet,
+                sourceVerified: true,
+                providerId: outcome.canonical.providerId,
+                canonicalId: outcome.canonical.canonicalId,
+              });
+            }
+          }
+          return;
+        }
       }
-      await updateOrderLocal(best.order.id, {
-        localStatus: 'matched',
-        matchScore: best.score,
-        rawSms: transaction.rawMessage,
-        matchedTransaction: JSON.stringify(transaction),
-        syncStatus: 'pending',
-      });
-      await addTimelineStage(best.order.id, 'VERIFICATION_COMPLETE', 'completed', `تطابق: ${best.score}`);
-      await logVerification(best.order.id, 'match', 'matched', `تطابق: ${best.score}`, transaction, transaction.transactionId);
-      await emitNotification('Nader Pay', 'تم العثور على تطابق', { orderId: best.order.id });
-
-      setState((s) => ({
-        ...s,
-        recentMatches: [best, ...s.recentMatches].slice(0, 50),
-      }));
-
-      if (!currentSettings.autoConfirm) {
-        await logVerification(best.order.id, 'confirm_skipped', 'pending', 'التحقق التلقائي معطل', transaction, transaction.transactionId);
-        return;
-      }
-
-      await sendEvidence(best.order, transaction);
     },
     [settings, deviceState, pendingOrdersRef, emitNotification, sendEvidence]
   );
