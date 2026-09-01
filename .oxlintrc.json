@@ -1,0 +1,18 @@
+{
+  "env": {
+    "node": true,
+    "jest": true
+  },
+  "globals": {
+    "require": "readonly",
+    "module": "readonly",
+    "describe": "readonly",
+    "test": "readonly",
+    "expect": "readonly",
+    "it": "readonly",
+    "beforeAll": "readonly",
+    "afterAll": "readonly",
+    "beforeEach": "readonly",
+    "afterEach": "readonly"
+  }
+}

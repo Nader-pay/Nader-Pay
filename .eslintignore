@@ -1,0 +1,4 @@
+scripts/*.js
+plugins/*.js
+node_modules
+src/__tests__
