@@ -1,9 +1,13 @@
 /**
  * Verification Test Lab Service
  * ─────────────────────────────
- * يسمح للمستخدم بلصق رسالة حقيقية وتحليلها بـ Parser الخاص بـ Provider معين.
- * يعرض جميع الحقول المستخرجة والمفقودة + سبب الرفض + parser version + source.
- * مستقل عن UI — يُستدعى من شاشة Test Lab.
+ * يسمح للمستخدم باختبار الـ Parser بـ 3 طرق:
+ *  1. تحليل رسالة كاملة (الطريقة الأصلية)
+ *  2. البحث برقم العملية في رسائل الهاتف
+ *  3. البحث برقم الهاتف في رسائل الهاتف
+ *
+ * يعرض الحقول المستخرجة + balanceBefore + سبب الرفض + parser version + source.
+ * مستقل عن UI.
  */
 
 import type { ProviderName } from '@/types/agent';
@@ -11,6 +15,13 @@ import type { ProviderParseResult } from '@/types/provider';
 import { parseMessageWithProvider, getParserInfo } from './providers';
 import { looksLikeVodafoneCashSms } from './providers/vodafoneCash';
 import { looksLikeInstaPaySms } from './providers/instaPay';
+import { findBalanceBefore } from './balanceBeforeEnricher';
+import {
+  searchByTransactionId,
+  searchBySenderPhone,
+  type TxIdSearchResult,
+  type PhoneSearchResult,
+} from './deviceMessageSearch';
 
 // ─── الحقول المتوقعة لكل Provider ──────────────────────────────────────────
 
@@ -29,7 +40,7 @@ const EXPECTED_FIELDS: Record<ProviderName, (keyof ProviderParseResult)[]> = {
   unknown: [],
 };
 
-// ─── أسباب الرفض المحتملة ───────────────────────────────────────────────────
+// ─── أسباب الرفض ──────────────────────────────────────────────────────────────
 
 function detectRejectionReason(body: string, provider: ProviderName): string {
   const norm = body.toLowerCase();
@@ -46,11 +57,10 @@ function detectRejectionReason(body: string, provider: ProviderName): string {
       return 'لم يُعثر على رقم العملية — مطلوب للتحقق (مثال: "رقم العملية: 022896233255").';
     if (!body.match(/(?:مبلغ|مبلغ\s+قدره)/))
       return 'لم يُعثر على المبلغ في الرسالة.';
-    // فحص تنسيق التاريخ تحديداً
     const hasDate = body.match(/(?:تاريخ\s+(?:العملية|المعاملة))\s*[:\s]\s*(\d{2}[\-\/]\d{2}[\-\/]\d{2,4}\s+\d{2}:\d{2}|\d{2}:\d{2}\s+\d{2}[\-\/]\d{2}[\-\/]\d{2,4})/);
     if (!hasDate)
-      return 'لم يُعثر على تاريخ العملية بصيغة صحيحة. الصيغ المدعومة: "YY-MM-DD HH:MM" مثال (21-08-26 00:15) أو "HH:MM DD-MM-YY".';
-    return 'فشل استخراج البيانات — تنسيق الرسالة غير متوقع. تأكد من وجود: تم استلام / المبلغ / رقم المحفظة / تاريخ العملية / رقم العملية.';
+      return 'لم يُعثر على تاريخ العملية بصيغة صحيحة. الصيغ المدعومة: "YY-MM-DD HH:MM" أو "HH:MM DD-MM-YY".';
+    return 'فشل استخراج البيانات — تنسيق الرسالة غير متوقع.';
   }
 
   if (provider === 'insta_pay') {
@@ -65,7 +75,7 @@ function detectRejectionReason(body: string, provider: ProviderName): string {
   return `الرسالة لا تنتمي لـ ${provider} أو تنسيقها غير مدعوم.`;
 }
 
-// ─── نتيجة التحليل ──────────────────────────────────────────────────────────
+// ─── أنواع النتائج ────────────────────────────────────────────────────────────
 
 export type TestLabResult = {
   valid: boolean;
@@ -73,51 +83,72 @@ export type TestLabResult = {
   transactionType: string | null;
   parserId: string;
   parserVersion: string;
-  /** الحقول التي تم استخراجها بنجاح */
   extractedFields: Partial<Record<keyof ProviderParseResult, unknown>>;
-  /** الحقول التي لم يُعثر عليها */
   missingFields: string[];
-  /** سبب الرفض إذا لم تكن رسالة دفع */
   rejectionReason: string | null;
-  /** الـ source المستخدم في التحليل */
   sourceIdentifier: string | null;
+  /** الرصيد قبل العملية — من آخر رسالة مالية سابقة في Trusted Source */
+  balanceBefore: number | null;
+  /** الرصيد بعد العملية — من نص الرسالة */
+  balanceAfter: number | null;
 };
 
-/**
- * حلّل رسالة بـ Parser الخاص بـ Provider المحدد وأعد تقرير مفصّل.
- */
+export type TxIdLabResult = {
+  searched: true;
+  searchType: 'transaction_id';
+  transactionId: string;
+  status: TxIdSearchResult['status'];
+  found: boolean;
+  reason: string;
+  match?: TestLabResult;
+};
+
+export type PhoneLabResult = {
+  searched: true;
+  searchType: 'sender_phone';
+  senderPhone: string;
+  status: PhoneSearchResult['status'];
+  found: boolean;
+  reason: string;
+  matches: TestLabResult[];
+};
+
+// ─── 1. تحليل رسالة كاملة ────────────────────────────────────────────────────
+
 export function analyzeMessageForProvider(
-  message: string,
+  body: string,
   provider: ProviderName,
-  sourceIdentifier?: string | null
+  sourceIdentifier: string | null
 ): TestLabResult {
-  const parserInfo = getParserInfo(provider) ?? { parserId: provider, parserVersion: '1' };
-  const parsed: ProviderParseResult | null = parseMessageWithProvider(message, provider);
+  const info = getParserInfo(provider);
+  const parsed = parseMessageWithProvider(body, provider);
 
   if (!parsed) {
     return {
       valid: false,
       provider,
       transactionType: null,
-      parserId: parserInfo.parserId,
-      parserVersion: parserInfo.parserVersion,
+      parserId: info?.parserId ?? `${provider}-parser`,
+      parserVersion: info?.parserVersion ?? '—',
       extractedFields: {},
       missingFields: EXPECTED_FIELDS[provider].map(String),
-      rejectionReason: detectRejectionReason(message, provider),
-      sourceIdentifier: sourceIdentifier ?? null,
+      rejectionReason: detectRejectionReason(body, provider),
+      sourceIdentifier,
+      balanceBefore: null,
+      balanceAfter: null,
     };
   }
 
-  // الحقول المستخرجة
-  const extractedFields: Partial<Record<keyof ProviderParseResult, unknown>> = {};
-  const missingFields: string[] = [];
+  const expectedFields = EXPECTED_FIELDS[provider];
+  const extracted: Partial<Record<keyof ProviderParseResult, unknown>> = {};
+  const missing: string[] = [];
 
-  for (const field of EXPECTED_FIELDS[provider]) {
+  for (const field of expectedFields) {
     const val = parsed[field];
     if (val !== null && val !== undefined && val !== '') {
-      extractedFields[field] = val;
+      extracted[field] = val;
     } else {
-      missingFields.push(String(field));
+      missing.push(String(field));
     }
   }
 
@@ -127,9 +158,118 @@ export function analyzeMessageForProvider(
     transactionType: parsed.transactionType ?? null,
     parserId: parsed.parserId,
     parserVersion: parsed.parserVersion,
-    extractedFields,
-    missingFields,
+    extractedFields: extracted,
+    missingFields: missing,
     rejectionReason: null,
-    sourceIdentifier: sourceIdentifier ?? null,
+    sourceIdentifier,
+    balanceBefore: null, // يُحسب لاحقاً async بـ enrichWithBalanceBefore
+    balanceAfter: parsed.balanceAfterTransaction ?? null,
   };
 }
+
+/**
+ * إثراء نتيجة التحليل بـ balanceBefore من Trusted Source (async).
+ * يُستدعى بعد analyzeMessageForProvider.
+ */
+export async function enrichTestLabResult(
+  result: TestLabResult,
+  sourceId: string | null
+): Promise<TestLabResult> {
+  if (!result.valid || result.provider !== 'vodafone_cash') return result;
+
+  // occurredAt من الحقول المستخرجة
+  const occurredAt = result.extractedFields.occurredAt as string | undefined;
+  if (!occurredAt) return result;
+
+  const balanceBefore = await findBalanceBefore(sourceId, occurredAt);
+  return { ...result, balanceBefore };
+}
+
+// ─── 2. البحث برقم العملية ───────────────────────────────────────────────────
+
+export async function searchByTxIdInDevice(
+  transactionId: string,
+  provider: ProviderName,
+  sourceIdentifier: string | null
+): Promise<TxIdLabResult> {
+  const result = await searchByTransactionId({
+    provider,
+    transactionId: transactionId.trim(),
+    trustedSourceId: sourceIdentifier,
+    maxMessages: 400,
+  });
+
+  if (!result.found || !result.match) {
+    return {
+      searched: true,
+      searchType: 'transaction_id',
+      transactionId,
+      status: result.status,
+      found: false,
+      reason: result.reason ?? 'لم يُعثر على رقم العملية',
+    };
+  }
+
+  const labResult = analyzeMessageForProvider(
+    result.match.originalBody,
+    provider,
+    result.match.sender
+  );
+  const enriched = await enrichTestLabResult(labResult, sourceIdentifier);
+
+  return {
+    searched: true,
+    searchType: 'transaction_id',
+    transactionId,
+    status: result.status,
+    found: true,
+    reason: `وُجدت رسالة تطابق رقم العملية ${transactionId}`,
+    match: enriched,
+  };
+}
+
+// ─── 3. البحث برقم الهاتف ────────────────────────────────────────────────────
+
+export async function searchByPhoneInDevice(
+  senderPhone: string,
+  provider: ProviderName,
+  sourceIdentifier: string | null
+): Promise<PhoneLabResult> {
+  const result = await searchBySenderPhone({
+    provider,
+    senderPhone: senderPhone.trim(),
+    trustedSourceId: sourceIdentifier,
+    maxMessages: 400,
+  });
+
+  if (!result.found || result.matches.length === 0) {
+    return {
+      searched: true,
+      searchType: 'sender_phone',
+      senderPhone,
+      status: result.status,
+      found: false,
+      reason: result.reason ?? 'لم يُعثر على رسائل من هذا الرقم',
+      matches: [],
+    };
+  }
+
+  const labMatches: TestLabResult[] = [];
+  for (const m of result.matches.slice(0, 10)) {
+    const labResult = analyzeMessageForProvider(m.originalBody, provider, m.sender);
+    const enriched = await enrichTestLabResult(labResult, sourceIdentifier);
+    labMatches.push(enriched);
+  }
+
+  return {
+    searched: true,
+    searchType: 'sender_phone',
+    senderPhone,
+    status: result.status,
+    found: true,
+    reason: `وُجدت ${labMatches.length} رسالة من ${senderPhone}`,
+    matches: labMatches,
+  };
+}
+
+// (end of file)

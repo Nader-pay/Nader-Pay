@@ -69,6 +69,7 @@ function bridgeToProviderParseResult(
     recipientWallet: parsed.recipientWallet ?? null,
     recipientAccount: null,
     balanceAfterTransaction: null,
+    balanceBeforeTransaction: null,
     transactionDate: (parsed.occurredAt ?? receivedAt).slice(0, 10),
     transferMethod: null,
     occurredAt: parsed.occurredAt ?? receivedAt,

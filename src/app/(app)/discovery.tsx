@@ -19,6 +19,8 @@ import {
   Bell,
   BellOff,
   CheckCircle2,
+  ChevronDown,
+  ChevronUp,
   HelpCircle,
   MessageSquare,
   Plus,
@@ -111,6 +113,9 @@ export default function SourceDiscoveryScreen() {
   const [manualSourceId, setManualSourceId] = useState('');
   const [manualProvider, setManualProvider] = useState<ProviderName>('vodafone_cash');
   const [manualLoading, setManualLoading] = useState(false);
+
+  // ── Source Messages Viewer ────────────────────────────────────────────────
+  const [expandedSourceId, setExpandedSourceId] = useState<string | null>(null);
 
   // ── Notification Source state ─────────────────────────────────────────────
   const [notifSources, setNotifSources] = useState<NotificationSource[]>([]);
@@ -322,42 +327,79 @@ export default function SourceDiscoveryScreen() {
   const renderItem = ({ item: source }: { item: SmsSource & { score: number } }) => {
     const likelihood = getLikelihood(source.score, source.providerHint);
     const provider = source.providerHint === 'unknown' ? null : source.providerHint;
+    const isExpanded = expandedSourceId === source.sourceId;
     return (
-      <Pressable
-        onPress={() => confirmSelect(source)}
-        className="p-4 border border-border rounded-2xl bg-card active:opacity-70 gap-2"
-        android_ripple={{ color: 'rgba(0,0,0,0.06)' }}
-      >
-        <View className="flex-row items-start justify-between">
-          <View className="flex-row items-center gap-2 flex-1 min-w-0">
-            <View className="w-9 h-9 rounded-full bg-muted items-center justify-center shrink-0">
-              <Smartphone size={18} color="#6b7280" />
+      <View className="border border-border rounded-2xl bg-card overflow-hidden gap-0">
+        <Pressable
+          onPress={() => confirmSelect(source)}
+          className="p-4 active:opacity-70 gap-2"
+          android_ripple={{ color: 'rgba(0,0,0,0.06)' }}
+        >
+          <View className="flex-row items-start justify-between">
+            <View className="flex-row items-center gap-2 flex-1 min-w-0">
+              <View className="w-9 h-9 rounded-full bg-muted items-center justify-center shrink-0">
+                <Smartphone size={18} color="#6b7280" />
+              </View>
+              <View className="flex-1 min-w-0">
+                <Text className="text-base font-semibold text-foreground" numberOfLines={1}>
+                  {source.displayName}
+                </Text>
+                {provider && (
+                  <Text className="text-xs text-muted-foreground">{PROVIDER_LABELS[provider]}</Text>
+                )}
+              </View>
             </View>
-            <View className="flex-1 min-w-0">
-              <Text className="text-base font-semibold text-foreground" numberOfLines={1}>
-                {source.displayName}
+            <View className="flex-row items-center gap-1 shrink-0">
+              <View
+                className="w-2 h-2 rounded-full"
+                style={{ backgroundColor: LIKELIHOOD_LABELS[likelihood].color }}
+              />
+              <Text className="text-xs text-muted-foreground">{LIKELIHOOD_LABELS[likelihood].label}</Text>
+            </View>
+          </View>
+          <Text className="text-sm text-foreground leading-5" numberOfLines={2}>
+            {source.lastMessageSummary}
+          </Text>
+          <View className="flex-row items-center justify-between">
+            <View className="flex-row items-center gap-3">
+              <Text className="text-xs text-muted-foreground">{source.messageCount} رسالة</Text>
+              <Text className="text-xs text-muted-foreground">{formatDate(source.lastMessageAt)}</Text>
+            </View>
+            {/* زر عرض عينة الرسائل */}
+            <Pressable
+              onPress={() => setExpandedSourceId(isExpanded ? null : source.sourceId)}
+              className="flex-row items-center gap-1 px-2.5 py-1 rounded-full bg-muted active:opacity-70"
+              hitSlop={8}
+            >
+              <MessageSquare size={12} color="#6b7280" />
+              <Text className="text-xs text-muted-foreground">
+                {isExpanded ? 'إخفاء' : 'الرسائل'}
               </Text>
-              {provider && (
-                <Text className="text-xs text-muted-foreground">{PROVIDER_LABELS[provider]}</Text>
-              )}
-            </View>
+              {isExpanded
+                ? <ChevronUp size={11} color="#6b7280" />
+                : <ChevronDown size={11} color="#6b7280" />}
+            </Pressable>
           </View>
-          <View className="flex-row items-center gap-1 shrink-0">
-            <View
-              className="w-2 h-2 rounded-full"
-              style={{ backgroundColor: LIKELIHOOD_LABELS[likelihood].color }}
-            />
-            <Text className="text-xs text-muted-foreground">{LIKELIHOOD_LABELS[likelihood].label}</Text>
+        </Pressable>
+
+        {/* عرض عينة الرسائل */}
+        {isExpanded && source.rawMessages.length > 0 && (
+          <View className="border-t border-border px-4 pb-4 gap-2 pt-3">
+            <Text className="text-xs font-semibold text-muted-foreground mb-1">
+              عينة من آخر {source.rawMessages.length} رسالة
+            </Text>
+            {source.rawMessages.map((msg, idx) => (
+              <View key={idx} className="bg-muted rounded-xl p-3 gap-1">
+                <View className="flex-row items-center justify-between mb-0.5">
+                  <Text className="text-xs font-medium text-foreground">{source.sourceId}</Text>
+                  <Text className="text-xs text-muted-foreground">{formatDate(msg.date)}</Text>
+                </View>
+                <Text className="text-xs text-foreground leading-5">{msg.body}</Text>
+              </View>
+            ))}
           </View>
-        </View>
-        <Text className="text-sm text-foreground leading-5" numberOfLines={2}>
-          {source.lastMessageSummary}
-        </Text>
-        <View className="flex-row items-center gap-3">
-          <Text className="text-xs text-muted-foreground">{source.messageCount} رسالة</Text>
-          <Text className="text-xs text-muted-foreground">{formatDate(source.lastMessageAt)}</Text>
-        </View>
-      </Pressable>
+        )}
+      </View>
     );
   };
 

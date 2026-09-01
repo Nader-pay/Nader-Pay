@@ -175,6 +175,7 @@ export function parseInstaPaySms(message: string): ProviderParseResult | null {
     parserVersion: INSTAPAY_PARSER_VERSION,
     // حقول غير متوفرة في هذا النوع من الرسائل
     balanceAfterTransaction: null,
+    balanceBeforeTransaction: null,
     messageSource: null,
     messageReceivedAt: null,
   };

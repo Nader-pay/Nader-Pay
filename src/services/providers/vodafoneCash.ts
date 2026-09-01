@@ -220,6 +220,8 @@ export function parseVodafoneCashSms(message: string): ProviderParseResult | nul
     recipientWallet,
     recipientAccount: null,
     balanceAfterTransaction: balanceAfterTransaction ?? null,
+    // balanceBeforeTransaction يُحسب خارج الـ parser (من الرسالة السابقة الموثوقة)
+    balanceBeforeTransaction: null,
     transactionDate: occurredAt.slice(0, 10),
     transferMethod: null,
     occurredAt,

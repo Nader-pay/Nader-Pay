@@ -45,6 +45,8 @@ export type ProviderParseResult = {
   recipientAccount: string | null;
   /** الرصيد بعد العملية (Vodafone Cash فقط) */
   balanceAfterTransaction: number | null;
+  /** الرصيد قبل العملية — من آخر رسالة مالية سابقة موثوقة */
+  balanceBeforeTransaction: number | null;
   /** تاريخ العملية yyyy-mm-dd */
   transactionDate: string | null;
   /** طريقة التحويل (InstaPay فقط) */

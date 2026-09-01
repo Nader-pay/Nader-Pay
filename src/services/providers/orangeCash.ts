@@ -82,6 +82,7 @@ export function parseOrangeCashSms(message: string): ProviderParseResult | null 
     recipientWallet: recipientWalletMatch ? normalizePhone(recipientWalletMatch[1]) : null,
     recipientAccount: null,
     balanceAfterTransaction: null,
+    balanceBeforeTransaction: null,
     transactionDate: null,
     transferMethod: null,
     occurredAt: parseOccurredAt(body) ?? new Date().toISOString(),

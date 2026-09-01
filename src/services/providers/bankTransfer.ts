@@ -85,6 +85,7 @@ export function parseBankTransferSms(message: string): ProviderParseResult | nul
     recipientWallet: null,
     recipientAccount: recipientAccountMatch ? normalizePhone(recipientAccountMatch[1]) : null,
     balanceAfterTransaction: null,
+    balanceBeforeTransaction: null,
     transactionDate: null,
     transferMethod: null,
     occurredAt: parseOccurredAt(body) ?? new Date().toISOString(),

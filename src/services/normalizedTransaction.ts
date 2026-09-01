@@ -39,6 +39,8 @@ export type NormalizedTransaction = {
   receiverWallet: string | null;
   /** الرصيد بعد العملية */
   balanceAfter: number | null;
+  /** الرصيد قبل العملية — من آخر رسالة مالية سابقة موثوقة (null = لا يوجد دليل) */
+  balanceBefore: number | null;
   /** وقت العملية الفعلي (من نص الرسالة) */
   transactionDateTime: string;
   /** وقت وصول الرسالة للجهاز */
@@ -139,6 +141,7 @@ export function normalizeParseResult(
     receiverAccount: parsed.recipientAccount ?? null,
     receiverWallet: parsed.recipientWallet ?? null,
     balanceAfter: parsed.balanceAfterTransaction ?? null,
+    balanceBefore: parsed.balanceBeforeTransaction ?? null,
     // transactionDateTime: من الرسالة إذا كانت متاحة
     transactionDateTime: parsed.transactionDate
       ? normalizeDateString(parsed.transactionDate)

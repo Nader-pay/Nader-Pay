@@ -17,15 +17,27 @@ import {
   ChevronDown,
   ChevronUp,
   FlaskConical,
+  Hash,
+  Phone,
   Search,
   XCircle,
 } from 'lucide-react-native';
 
-import { analyzeMessageForProvider, type TestLabResult } from '@/services/verificationTestLab';
+import {
+  analyzeMessageForProvider,
+  enrichTestLabResult,
+  searchByTxIdInDevice,
+  searchByPhoneInDevice,
+  type TestLabResult,
+  type TxIdLabResult,
+  type PhoneLabResult,
+} from '@/services/verificationTestLab';
 import { searchDeviceMessages, type DeviceMessageMatch } from '@/services/deviceMessageSearch';
 import { getVerifiedSourceForProvider } from '@/services/providerSourceService';
 import { getParserInfo } from '@/services/providers';
 import type { ProviderName } from '@/types/agent';
+
+// ─── ثوابت ───────────────────────────────────────────────────────────────────
 
 const PROVIDER_LABELS: Record<ProviderName, string> = {
   vodafone_cash: 'Vodafone Cash',
@@ -36,26 +48,30 @@ const PROVIDER_LABELS: Record<ProviderName, string> = {
 };
 
 const FIELD_LABELS: Record<string, string> = {
-  transactionId:            'رقم العملية',
-  transactionType:          'نوع المعاملة',
-  amount:                   'المبلغ',
-  currency:                 'العملة',
-  senderPhone:              'رقم المُرسِل',
-  senderName:               'اسم المُرسِل',
-  recipientWallet:          'محفظة المستلم',
-  recipientAccount:         'حساب المستلم',
-  balanceAfterTransaction:  'الرصيد بعد العملية',
-  transactionDate:          'تاريخ العملية',
-  transferMethod:           'طريقة التحويل',
-  occurredAt:               'وقت العملية',
-  parserId:                 'Parser ID',
-  parserVersion:            'إصدار الـ Parser',
+  transactionId:           'رقم العملية',
+  transactionType:         'نوع المعاملة',
+  amount:                  'المبلغ',
+  currency:                'العملة',
+  senderPhone:             'رقم المُرسِل',
+  senderName:              'اسم المُرسِل',
+  recipientWallet:         'محفظة المستلم',
+  recipientAccount:        'حساب المستلم',
+  balanceAfterTransaction: 'الرصيد بعد العملية',
+  transactionDate:         'تاريخ العملية',
+  transferMethod:          'طريقة التحويل',
+  occurredAt:              'وقت العملية',
+  parserId:                'Parser ID',
+  parserVersion:           'إصدار الـ Parser',
 };
+
+type SearchMode = 'message' | 'txid' | 'phone';
 
 function parseProvider(raw: string | undefined): ProviderName {
   const valid: ProviderName[] = ['vodafone_cash', 'insta_pay', 'orange_cash', 'bank_transfer'];
   return valid.includes(raw as ProviderName) ? (raw as ProviderName) : 'vodafone_cash';
 }
+
+// ─── الشاشة الرئيسية ─────────────────────────────────────────────────────────
 
 export default function TestLabScreen() {
   const router = useRouter();
@@ -64,12 +80,29 @@ export default function TestLabScreen() {
   const provider = parseProvider(rawProvider);
   const parserInfo = getParserInfo(provider);
 
+  // وضع البحث الحالي
+  const [mode, setMode] = useState<SearchMode>('message');
+
+  // حالة وضع الرسالة الكاملة
   const [message, setMessage] = useState('');
   const [analyzing, setAnalyzing] = useState(false);
   const [result, setResult] = useState<TestLabResult | null>(null);
   const [searching, setSearching] = useState(false);
   const [deviceMatches, setDeviceMatches] = useState<DeviceMessageMatch[] | null>(null);
   const [expandedMatch, setExpandedMatch] = useState<number | null>(null);
+
+  // حالة وضع رقم العملية
+  const [txId, setTxId] = useState('');
+  const [txSearching, setTxSearching] = useState(false);
+  const [txResult, setTxResult] = useState<TxIdLabResult | null>(null);
+
+  // حالة وضع رقم الهاتف
+  const [phone, setPhone] = useState('');
+  const [phoneSearching, setPhoneSearching] = useState(false);
+  const [phoneResult, setPhoneResult] = useState<PhoneLabResult | null>(null);
+  const [expandedPhoneMatch, setExpandedPhoneMatch] = useState<number | null>(null);
+
+  // ── وضع 1: تحليل رسالة كاملة ─────────────────────────────────────────────
 
   const handleAnalyze = useCallback(async () => {
     if (!message.trim()) return;
@@ -78,8 +111,9 @@ export default function TestLabScreen() {
     setDeviceMatches(null);
     try {
       const src = await getVerifiedSourceForProvider(provider);
-      const res = analyzeMessageForProvider(message.trim(), provider, src?.sourceId ?? null);
-      setResult(res);
+      const raw = analyzeMessageForProvider(message.trim(), provider, src?.sourceId ?? null);
+      const enriched = await enrichTestLabResult(raw, src?.sourceId ?? null);
+      setResult(enriched);
     } finally {
       setAnalyzing(false);
     }
@@ -90,15 +124,61 @@ export default function TestLabScreen() {
     setSearching(true);
     setDeviceMatches(null);
     try {
+      const src = await getVerifiedSourceForProvider(provider);
       const { parseMessageWithProvider } = await import('@/services/providers');
       const parsed = parseMessageWithProvider(message.trim(), provider);
       if (!parsed) { setDeviceMatches([]); return; }
-      const matches = await searchDeviceMessages({ provider, parsed, maxMessages: 300 });
+      const matches = await searchDeviceMessages({
+        provider,
+        parsed,
+        trustedSourceId: src?.sourceId ?? null,
+        maxMessages: 300,
+      });
       setDeviceMatches(matches);
     } finally {
       setSearching(false);
     }
   }, [result, message, provider]);
+
+  // ── وضع 2: البحث برقم العملية ─────────────────────────────────────────────
+
+  const handleSearchTxId = useCallback(async () => {
+    if (!txId.trim()) return;
+    setTxSearching(true);
+    setTxResult(null);
+    try {
+      const src = await getVerifiedSourceForProvider(provider);
+      const res = await searchByTxIdInDevice(txId.trim(), provider, src?.sourceId ?? null);
+      setTxResult(res);
+    } finally {
+      setTxSearching(false);
+    }
+  }, [txId, provider]);
+
+  // ── وضع 3: البحث برقم الهاتف ──────────────────────────────────────────────
+
+  const handleSearchPhone = useCallback(async () => {
+    if (!phone.trim()) return;
+    setPhoneSearching(true);
+    setPhoneResult(null);
+    setExpandedPhoneMatch(null);
+    try {
+      const src = await getVerifiedSourceForProvider(provider);
+      const res = await searchByPhoneInDevice(phone.trim(), provider, src?.sourceId ?? null);
+      setPhoneResult(res);
+    } finally {
+      setPhoneSearching(false);
+    }
+  }, [phone, provider]);
+
+  // ─── Reset عند تغيير الوضع ────────────────────────────────────────────────
+
+  const switchMode = useCallback((newMode: SearchMode) => {
+    setMode(newMode);
+    setResult(null); setDeviceMatches(null);
+    setTxResult(null);
+    setPhoneResult(null); setExpandedPhoneMatch(null);
+  }, []);
 
   return (
     <View className="flex-1 bg-background" style={{ paddingTop: insets.top }}>
@@ -118,10 +198,15 @@ export default function TestLabScreen() {
         </View>
         <View className="flex-row items-center gap-1.5 px-2.5 py-1 rounded-full bg-muted">
           <FlaskConical size={13} color="#6b7280" />
-          <Text className="text-xs text-muted-foreground">
-            {parserInfo?.parserVersion ?? '—'}
-          </Text>
+          <Text className="text-xs text-muted-foreground">{parserInfo?.parserVersion ?? '—'}</Text>
         </View>
+      </View>
+
+      {/* Tabs الثلاثة */}
+      <View className="flex-row gap-1 px-4 py-3 border-b border-border">
+        <ModeTab label="رسالة" icon="msg" active={mode === 'message'} onPress={() => switchMode('message')} />
+        <ModeTab label="رقم العملية" icon="hash" active={mode === 'txid'} onPress={() => switchMode('txid')} />
+        <ModeTab label="رقم الهاتف" icon="phone" active={mode === 'phone'} onPress={() => switchMode('phone')} />
       </View>
 
       <KeyboardAvoidingView
@@ -140,209 +225,402 @@ export default function TestLabScreen() {
             <Row label="Provider" value={PROVIDER_LABELS[provider]} />
           </View>
 
-          {/* Message input */}
-          <Text className="text-sm font-semibold text-foreground mb-2">الصق رسالة حقيقية</Text>
-          <TextInput
-            value={message}
-            onChangeText={setMessage}
-            multiline
-            numberOfLines={6}
-            placeholder={
-              provider === 'vodafone_cash'
-                ? 'تم استلام مبلغ 400 جنيه من رقم 01030951228...'
-                : 'تم اضافة مبلغ 300EGP الى حساب رقم xxx4449...'
-            }
-            placeholderTextColor="#9ca3af"
-            textAlignVertical="top"
-            className="border border-border rounded-xl p-4 text-sm text-foreground bg-card leading-6"
-            style={{ minHeight: 120 }}
-          />
-
-          <Pressable
-            onPress={handleAnalyze}
-            disabled={!message.trim() || analyzing}
-            className="mt-3 flex-row items-center justify-center gap-2 py-3 rounded-xl bg-primary active:opacity-70 disabled:opacity-40"
-          >
-            {analyzing
-              ? <ActivityIndicator size={16} color="#ffffff" />
-              : <FlaskConical size={16} color="#ffffff" />}
-            <Text className="text-sm font-semibold text-primary-foreground">تحليل الرسالة</Text>
-          </Pressable>
-
-          {/* نتيجة التحليل */}
-          {result && (
-            <View className="mt-5 gap-3">
-              {/* حالة الرسالة */}
-              <View
-                className={`flex-row items-center gap-2.5 px-4 py-3 rounded-xl border ${
-                  result.valid
-                    ? 'bg-green-50 border-green-200'
-                    : 'bg-red-50 border-red-200'
-                }`}
+          {/* ── وضع 1: رسالة كاملة ─────────────────────────────────────────── */}
+          {mode === 'message' && (
+            <>
+              <Text className="text-sm font-semibold text-foreground mb-2">الصق رسالة حقيقية</Text>
+              <TextInput
+                value={message}
+                onChangeText={setMessage}
+                multiline
+                numberOfLines={6}
+                placeholder={
+                  provider === 'vodafone_cash'
+                    ? 'تم استلام مبلغ 400 جنيه من رقم 01030951228...'
+                    : 'تم اضافة مبلغ 300EGP الى حساب رقم xxx4449...'
+                }
+                placeholderTextColor="#9ca3af"
+                textAlignVertical="top"
+                className="border border-border rounded-xl p-4 text-sm text-foreground bg-card leading-6"
+                style={{ minHeight: 120 }}
+              />
+              <Pressable
+                onPress={handleAnalyze}
+                disabled={!message.trim() || analyzing}
+                className="mt-3 flex-row items-center justify-center gap-2 py-3 rounded-xl bg-primary active:opacity-70 disabled:opacity-40"
               >
-                {result.valid
-                  ? <CheckCircle2 size={20} color="#16a34a" />
-                  : <XCircle size={20} color="#dc2626" />}
-                <View className="flex-1">
-                  <Text
-                    className="text-sm font-semibold"
-                    style={{ color: result.valid ? '#15803d' : '#b91c1c' }}
-                  >
-                    {result.valid ? 'رسالة صالحة لهذا الـ Provider' : 'رسالة غير صالحة'}
-                  </Text>
-                  {result.transactionType && (
-                    <Text className="text-xs" style={{ color: result.valid ? '#16a34a' : '#dc2626' }}>
-                      {result.transactionType === 'incoming_payment' ? 'استلام أموال' : result.transactionType}
-                    </Text>
-                  )}
-                </View>
-              </View>
+                {analyzing
+                  ? <ActivityIndicator size={16} color="#ffffff" />
+                  : <FlaskConical size={16} color="#ffffff" />}
+                <Text className="text-sm font-semibold text-primary-foreground">تحليل الرسالة</Text>
+              </Pressable>
 
-              {/* سبب الرفض */}
-              {!result.valid && result.rejectionReason && (
-                <View className="px-4 py-3 rounded-xl bg-red-50 border border-red-200">
-                  <Text className="text-xs font-semibold text-red-700 mb-1">سبب الرفض</Text>
-                  <Text className="text-sm text-red-700 leading-5">{result.rejectionReason}</Text>
+              {result && (
+                <View className="mt-5 gap-3">
+                  <AnalysisResultCard result={result} />
+                  {result.valid && (
+                    <Pressable
+                      onPress={handleSearchDevice}
+                      disabled={searching}
+                      className="flex-row items-center justify-center gap-2 py-3 rounded-xl border border-primary active:opacity-70 disabled:opacity-40"
+                    >
+                      {searching
+                        ? <ActivityIndicator size={15} color="#1d4ed8" />
+                        : <Search size={15} color="#1d4ed8" />}
+                      <Text className="text-sm font-semibold text-primary">البحث في رسائل الهاتف</Text>
+                    </Pressable>
+                  )}
                 </View>
               )}
 
-              {/* الحقول المستخرجة */}
-              {result.valid && Object.keys(result.extractedFields).length > 0 && (
-                <View className="px-4 py-4 rounded-xl border border-border bg-card gap-2">
-                  <Text className="text-sm font-semibold text-foreground mb-1">الحقول المستخرجة</Text>
-                  {Object.entries(result.extractedFields).map(([k, v]) => (
-                    <Row
-                      key={k}
-                      label={FIELD_LABELS[k] ?? k}
-                      value={String(v)}
-                      mono={['transactionId', 'parserId', 'recipientWallet', 'recipientAccount', 'senderPhone'].includes(k)}
-                      success
+              {deviceMatches !== null && (
+                <View className="mt-4 gap-3 pb-10">
+                  <Text className="text-sm font-semibold text-foreground">
+                    {deviceMatches.length === 0
+                      ? 'لم يُعثر على رسائل مطابقة في الهاتف'
+                      : `وُجد ${deviceMatches.length} رسالة مطابقة`}
+                  </Text>
+                  {deviceMatches.map((m, i) => (
+                    <DeviceMatchCard
+                      key={i}
+                      match={m}
+                      index={i}
+                      expanded={expandedMatch === i}
+                      onToggle={() => setExpandedMatch(expandedMatch === i ? null : i)}
                     />
                   ))}
-                  {/* Source */}
-                  {result.sourceIdentifier && (
-                    <Row label="المصدر المستخدم" value={result.sourceIdentifier} mono />
+                </View>
+              )}
+            </>
+          )}
+
+          {/* ── وضع 2: رقم العملية ─────────────────────────────────────────── */}
+          {mode === 'txid' && (
+            <>
+              <Text className="text-sm font-semibold text-foreground mb-2">رقم العملية</Text>
+              <TextInput
+                value={txId}
+                onChangeText={setTxId}
+                placeholder="مثال: 022896233255"
+                placeholderTextColor="#9ca3af"
+                keyboardType="numeric"
+                className="border border-border rounded-xl px-4 py-3.5 text-sm text-foreground bg-card"
+              />
+              <Pressable
+                onPress={handleSearchTxId}
+                disabled={!txId.trim() || txSearching}
+                className="mt-3 flex-row items-center justify-center gap-2 py-3 rounded-xl bg-primary active:opacity-70 disabled:opacity-40"
+              >
+                {txSearching
+                  ? <ActivityIndicator size={16} color="#ffffff" />
+                  : <Hash size={16} color="#ffffff" />}
+                <Text className="text-sm font-semibold text-primary-foreground">
+                  بحث برقم العملية
+                </Text>
+              </Pressable>
+
+              {txResult && (
+                <View className="mt-5 gap-3 pb-10">
+                  <TxIdResultCard result={txResult} />
+                  {txResult.found && txResult.match && (
+                    <AnalysisResultCard result={txResult.match} />
                   )}
                 </View>
               )}
+            </>
+          )}
 
-              {/* الحقول المفقودة */}
-              {result.missingFields.length > 0 && (
-                <View className="px-4 py-4 rounded-xl border border-border bg-card gap-2">
-                  <Text className="text-sm font-semibold text-muted-foreground mb-1">
-                    الحقول غير المتوفرة في هذه الرسالة
-                  </Text>
-                  {result.missingFields.map((f) => (
-                    <View key={f} className="flex-row items-center gap-2">
-                      <View className="w-1.5 h-1.5 rounded-full bg-muted-foreground/40" />
-                      <Text className="text-xs text-muted-foreground">
-                        {FIELD_LABELS[f] ?? f}
-                      </Text>
+          {/* ── وضع 3: رقم الهاتف ──────────────────────────────────────────── */}
+          {mode === 'phone' && (
+            <>
+              <Text className="text-sm font-semibold text-foreground mb-2">رقم هاتف المُرسِل</Text>
+              <TextInput
+                value={phone}
+                onChangeText={setPhone}
+                placeholder="مثال: 01030951228"
+                placeholderTextColor="#9ca3af"
+                keyboardType="phone-pad"
+                className="border border-border rounded-xl px-4 py-3.5 text-sm text-foreground bg-card"
+              />
+              <Pressable
+                onPress={handleSearchPhone}
+                disabled={!phone.trim() || phoneSearching}
+                className="mt-3 flex-row items-center justify-center gap-2 py-3 rounded-xl bg-primary active:opacity-70 disabled:opacity-40"
+              >
+                {phoneSearching
+                  ? <ActivityIndicator size={16} color="#ffffff" />
+                  : <Phone size={16} color="#ffffff" />}
+                <Text className="text-sm font-semibold text-primary-foreground">
+                  بحث برقم الهاتف
+                </Text>
+              </Pressable>
+
+              {phoneResult && (
+                <View className="mt-5 gap-3 pb-10">
+                  <PhoneResultBanner result={phoneResult} />
+                  {phoneResult.found && phoneResult.matches.map((m, i) => (
+                    <View key={i} className="border border-border rounded-xl bg-card overflow-hidden">
+                      <Pressable
+                        onPress={() => setExpandedPhoneMatch(expandedPhoneMatch === i ? null : i)}
+                        className="flex-row items-center justify-between px-4 py-3 active:opacity-70"
+                      >
+                        <Text className="text-sm font-medium text-foreground">
+                          {`عملية ${i + 1}`}
+                          {m.extractedFields.amount != null
+                            ? ` — ${String(m.extractedFields.amount)} جنيه`
+                            : ''}
+                        </Text>
+                        {expandedPhoneMatch === i
+                          ? <ChevronUp size={14} color="#9ca3af" />
+                          : <ChevronDown size={14} color="#9ca3af" />}
+                      </Pressable>
+                      {expandedPhoneMatch === i && (
+                        <View className="border-t border-border px-4 pb-4">
+                          <AnalysisResultCard result={m} compact />
+                        </View>
+                      )}
                     </View>
                   ))}
                 </View>
               )}
-
-              {/* زر البحث في الهاتف */}
-              {result.valid && (
-                <Pressable
-                  onPress={handleSearchDevice}
-                  disabled={searching}
-                  className="flex-row items-center justify-center gap-2 py-3 rounded-xl border border-primary active:opacity-70 disabled:opacity-40"
-                >
-                  {searching
-                    ? <ActivityIndicator size={15} color="#1d4ed8" />
-                    : <Search size={15} color="#1d4ed8" />}
-                  <Text className="text-sm font-semibold text-primary">البحث في رسائل الهاتف</Text>
-                </Pressable>
-              )}
-            </View>
+            </>
           )}
 
-          {/* نتائج البحث في الهاتف */}
-          {deviceMatches !== null && (
-            <View className="mt-4 gap-3 pb-10">
-              <Text className="text-sm font-semibold text-foreground">
-                {deviceMatches.length === 0
-                  ? 'لم يُعثر على رسائل مطابقة في الهاتف'
-                  : `وُجد ${deviceMatches.length} رسالة مطابقة`}
-              </Text>
-              {deviceMatches.map((m, i) => (
-                <View key={i} className="border border-border rounded-xl bg-card overflow-hidden">
-                  {/* رأس النتيجة */}
-                  <Pressable
-                    onPress={() => setExpandedMatch(expandedMatch === i ? null : i)}
-                    className="flex-row items-center justify-between px-4 py-3 active:opacity-70"
-                  >
-                    <View className="flex-row items-center gap-2 flex-1">
-                      <MatchBadge strength={m.matchStrength} />
-                      <Text className="text-xs font-medium text-foreground flex-1" numberOfLines={1}>
-                        {m.sender}
-                      </Text>
-                    </View>
-                    <View className="flex-row items-center gap-1">
-                      <Text className="text-xs text-muted-foreground">{formatDate(m.receivedAt)}</Text>
-                      {expandedMatch === i
-                        ? <ChevronUp size={14} color="#9ca3af" />
-                        : <ChevronDown size={14} color="#9ca3af" />}
-                    </View>
-                  </Pressable>
-
-                  {/* تفاصيل التطابق */}
-                  {expandedMatch === i && (
-                    <View className="px-4 pb-4 gap-3 border-t border-border">
-                      {/* أسباب التطابق */}
-                      <View className="flex-row flex-wrap gap-1.5 mt-3">
-                        {m.matchReasons.map((r, j) => (
-                          <View key={j} className="px-2 py-0.5 rounded-full bg-green-50 border border-green-200">
-                            <Text className="text-xs text-green-700">{r}</Text>
-                          </View>
-                        ))}
-                      </View>
-                      {/* الرسالة الأصلية كاملة */}
-                      <View className="mt-1">
-                        <Text className="text-xs font-semibold text-muted-foreground mb-1.5">الرسالة الأصلية</Text>
-                        <View className="p-3 rounded-lg bg-muted border border-border">
-                          <Text className="text-xs text-foreground leading-5 font-mono">
-                            {m.originalBody}
-                          </Text>
-                        </View>
-                      </View>
-                      {/* بيانات العملية */}
-                      <View className="gap-1.5 mt-1">
-                        <Row label="المبلغ" value={`${m.parsedTransaction.amount} ${m.parsedTransaction.currency}`} success />
-                        {m.parsedTransaction.senderPhone && (
-                          <Row label="رقم المُرسِل" value={m.parsedTransaction.senderPhone} mono />
-                        )}
-                        {m.parsedTransaction.senderName && (
-                          <Row label="اسم المُرسِل" value={m.parsedTransaction.senderName} />
-                        )}
-                        {m.parsedTransaction.recipientAccount && (
-                          <Row label="الحساب المستلم" value={m.parsedTransaction.recipientAccount} mono />
-                        )}
-                        {m.parsedTransaction.recipientWallet && (
-                          <Row label="المحفظة" value={m.parsedTransaction.recipientWallet} mono />
-                        )}
-                        <Row label="وقت الاستلام" value={formatDate(m.receivedAt)} />
-                        {m.parsedTransaction.occurredAt && (
-                          <Row label="وقت العملية" value={formatDate(m.parsedTransaction.occurredAt)} />
-                        )}
-                      </View>
-                    </View>
-                  )}
-                </View>
-              ))}
-            </View>
-          )}
-
-          <View style={{ height: 32 }} />
+          <View style={{ height: 40 }} />
         </ScrollView>
       </KeyboardAvoidingView>
     </View>
   );
 }
 
-// ─── مكونات مساعدة ─────────────────────────────────────────────────────────
+// ─── مكونات مساعدة ───────────────────────────────────────────────────────────
+
+function ModeTab({
+  label, active, onPress, icon,
+}: {
+  label: string; active: boolean; onPress: () => void; icon: 'msg' | 'hash' | 'phone';
+}) {
+  return (
+    <Pressable
+      onPress={onPress}
+      className={`flex-1 flex-row items-center justify-center gap-1.5 py-2 rounded-lg active:opacity-70 ${
+        active ? 'bg-primary' : 'bg-muted'
+      }`}
+    >
+      {icon === 'msg'   && <FlaskConical size={13} color={active ? '#ffffff' : '#6b7280'} />}
+      {icon === 'hash'  && <Hash size={13} color={active ? '#ffffff' : '#6b7280'} />}
+      {icon === 'phone' && <Phone size={13} color={active ? '#ffffff' : '#6b7280'} />}
+      <Text className={`text-xs font-semibold ${active ? 'text-primary-foreground' : 'text-muted-foreground'}`}>
+        {label}
+      </Text>
+    </Pressable>
+  );
+}
+
+function AnalysisResultCard({ result, compact }: { result: TestLabResult; compact?: boolean }) {
+  return (
+    <View className={`gap-3 ${compact ? 'mt-3' : ''}`}>
+      {/* حالة الرسالة */}
+      <View
+        className={`flex-row items-center gap-2.5 px-4 py-3 rounded-xl border ${
+          result.valid ? 'bg-green-50 border-green-200' : 'bg-red-50 border-red-200'
+        }`}
+      >
+        {result.valid
+          ? <CheckCircle2 size={20} color="#16a34a" />
+          : <XCircle size={20} color="#dc2626" />}
+        <View className="flex-1">
+          <Text
+            className="text-sm font-semibold"
+            style={{ color: result.valid ? '#15803d' : '#b91c1c' }}
+          >
+            {result.valid ? 'رسالة صالحة لهذا الـ Provider' : 'رسالة غير صالحة'}
+          </Text>
+          {result.transactionType && (
+            <Text className="text-xs" style={{ color: result.valid ? '#16a34a' : '#dc2626' }}>
+              {result.transactionType === 'incoming_payment' ? 'استلام أموال' : result.transactionType}
+            </Text>
+          )}
+        </View>
+      </View>
+
+      {/* سبب الرفض */}
+      {!result.valid && result.rejectionReason && (
+        <View className="px-4 py-3 rounded-xl bg-red-50 border border-red-200">
+          <Text className="text-xs font-semibold text-red-700 mb-1">سبب الرفض</Text>
+          <Text className="text-sm text-red-700 leading-5">{result.rejectionReason}</Text>
+        </View>
+      )}
+
+      {/* الرصيد قبل + بعد */}
+      {result.valid && (result.balanceBefore !== null || result.balanceAfter !== null) && (
+        <View className="px-4 py-3 rounded-xl bg-blue-50 border border-blue-200 gap-2">
+          <Text className="text-xs font-semibold text-blue-800 mb-0.5">الرصيد</Text>
+          {result.balanceBefore !== null && (
+            <Row label="الرصيد قبل العملية" value={`${result.balanceBefore.toFixed(2)} جنيه`} />
+          )}
+          {result.balanceBefore === null && result.balanceAfter !== null && (
+            <Row label="الرصيد قبل العملية" value="لا يوجد دليل سابق" />
+          )}
+          {result.balanceAfter !== null && (
+            <Row label="الرصيد بعد العملية" value={`${result.balanceAfter.toFixed(2)} جنيه`} success />
+          )}
+        </View>
+      )}
+
+      {/* الحقول المستخرجة */}
+      {result.valid && Object.keys(result.extractedFields).length > 0 && (
+        <View className="px-4 py-4 rounded-xl border border-border bg-card gap-2">
+          <Text className="text-sm font-semibold text-foreground mb-1">الحقول المستخرجة</Text>
+          {Object.entries(result.extractedFields).map(([k, v]) => (
+            <Row
+              key={k}
+              label={FIELD_LABELS[k] ?? k}
+              value={String(v)}
+              mono={['transactionId', 'parserId', 'recipientWallet', 'recipientAccount', 'senderPhone'].includes(k)}
+              success
+            />
+          ))}
+          {result.sourceIdentifier && (
+            <Row label="المصدر المستخدم" value={result.sourceIdentifier} mono />
+          )}
+        </View>
+      )}
+
+      {/* الحقول المفقودة */}
+      {result.missingFields.length > 0 && (
+        <View className="px-4 py-4 rounded-xl border border-border bg-card gap-2">
+          <Text className="text-sm font-semibold text-muted-foreground mb-1">
+            الحقول غير المتوفرة في هذه الرسالة
+          </Text>
+          {result.missingFields.map((f) => (
+            <View key={f} className="flex-row items-center gap-2">
+              <View className="w-1.5 h-1.5 rounded-full bg-muted-foreground/40" />
+              <Text className="text-xs text-muted-foreground">{FIELD_LABELS[f] ?? f}</Text>
+            </View>
+          ))}
+        </View>
+      )}
+    </View>
+  );
+}
+
+function TxIdResultCard({ result }: { result: TxIdLabResult }) {
+  const success = result.found;
+  return (
+    <View
+      className={`flex-row items-center gap-2.5 px-4 py-3 rounded-xl border ${
+        success ? 'bg-green-50 border-green-200' : 'bg-red-50 border-red-200'
+      }`}
+    >
+      {success
+        ? <CheckCircle2 size={20} color="#16a34a" />
+        : <XCircle size={20} color="#dc2626" />}
+      <View className="flex-1">
+        <Text
+          className="text-sm font-semibold"
+          style={{ color: success ? '#15803d' : '#b91c1c' }}
+        >
+          {success ? 'وُجدت الرسالة في الهاتف' : 'لم يُعثر على رقم العملية'}
+        </Text>
+        <Text className="text-xs" style={{ color: success ? '#16a34a' : '#dc2626' }}>
+          {result.reason}
+        </Text>
+      </View>
+    </View>
+  );
+}
+
+function PhoneResultBanner({ result }: { result: PhoneLabResult }) {
+  const success = result.found;
+  return (
+    <View
+      className={`flex-row items-center gap-2.5 px-4 py-3 rounded-xl border ${
+        success ? 'bg-green-50 border-green-200' : 'bg-red-50 border-red-200'
+      }`}
+    >
+      {success
+        ? <CheckCircle2 size={20} color="#16a34a" />
+        : <XCircle size={20} color="#dc2626" />}
+      <View className="flex-1">
+        <Text
+          className="text-sm font-semibold"
+          style={{ color: success ? '#15803d' : '#b91c1c' }}
+        >
+          {success ? `${result.matches.length} عملية من ${result.senderPhone}` : 'لم يُعثر على رسائل'}
+        </Text>
+        <Text className="text-xs" style={{ color: success ? '#16a34a' : '#dc2626' }}>
+          {result.reason}
+        </Text>
+      </View>
+    </View>
+  );
+}
+
+function DeviceMatchCard({
+  match, index, expanded, onToggle,
+}: {
+  match: DeviceMessageMatch; index: number; expanded: boolean; onToggle: () => void;
+}) {
+  return (
+    <View className="border border-border rounded-xl bg-card overflow-hidden">
+      <Pressable
+        onPress={onToggle}
+        className="flex-row items-center justify-between px-4 py-3 active:opacity-70"
+      >
+        <View className="flex-row items-center gap-2 flex-1">
+          <MatchBadge strength={match.matchStrength} />
+          <Text className="text-xs font-medium text-foreground flex-1" numberOfLines={1}>
+            {match.sender}
+          </Text>
+        </View>
+        <View className="flex-row items-center gap-1">
+          <Text className="text-xs text-muted-foreground">{formatDate(match.receivedAt)}</Text>
+          {expanded
+            ? <ChevronUp size={14} color="#9ca3af" />
+            : <ChevronDown size={14} color="#9ca3af" />}
+        </View>
+      </Pressable>
+
+      {expanded && (
+        <View className="px-4 pb-4 gap-3 border-t border-border">
+          <View className="flex-row flex-wrap gap-1.5 mt-3">
+            {match.matchReasons.map((r, j) => (
+              <View key={j} className="px-2 py-0.5 rounded-full bg-green-50 border border-green-200">
+                <Text className="text-xs text-green-700">{r}</Text>
+              </View>
+            ))}
+          </View>
+          <View className="mt-1">
+            <Text className="text-xs font-semibold text-muted-foreground mb-1.5">الرسالة الأصلية</Text>
+            <View className="p-3 rounded-lg bg-muted border border-border">
+              <Text className="text-xs text-foreground leading-5">{match.originalBody}</Text>
+            </View>
+          </View>
+          <View className="gap-1.5 mt-1">
+            <Row label="المبلغ" value={`${match.parsedTransaction.amount} ${match.parsedTransaction.currency}`} success />
+            {match.parsedTransaction.senderPhone && (
+              <Row label="رقم المُرسِل" value={match.parsedTransaction.senderPhone} mono />
+            )}
+            {match.parsedTransaction.senderName && (
+              <Row label="اسم المُرسِل" value={match.parsedTransaction.senderName} />
+            )}
+            {match.parsedTransaction.recipientAccount && (
+              <Row label="الحساب المستلم" value={match.parsedTransaction.recipientAccount} mono />
+            )}
+            {match.parsedTransaction.recipientWallet && (
+              <Row label="المحفظة" value={match.parsedTransaction.recipientWallet} mono />
+            )}
+            <Row label="وقت الاستلام" value={formatDate(match.receivedAt)} />
+            {match.parsedTransaction.occurredAt && (
+              <Row label="وقت العملية" value={formatDate(match.parsedTransaction.occurredAt)} />
+            )}
+          </View>
+        </View>
+      )}
+    </View>
+  );
+}
 
 function Row({
   label, value, mono, success,
@@ -370,10 +648,7 @@ function MatchBadge({ strength }: { strength: 'exact' | 'strong' | 'partial' }) 
     partial: { label: 'جزئي',      color: '#92400e', bg: '#fffbeb', border: '#fde68a' },
   }[strength];
   return (
-    <View
-      className="px-2 py-0.5 rounded-full border"
-      style={{ backgroundColor: cfg.bg, borderColor: cfg.border }}
-    >
+    <View className="px-2 py-0.5 rounded-full border" style={{ backgroundColor: cfg.bg, borderColor: cfg.border }}>
       <Text className="text-xs font-medium" style={{ color: cfg.color }}>{cfg.label}</Text>
     </View>
   );
