@@ -103,18 +103,22 @@ export default function HomeScreen() {
     state.diagnostics.backendStatus
   );
 
-  const agentRunning = state.diagnostics.agentRunning;
+  // agentRunning: يقرأ من runtimeStatus مباشرةً للاستجابة الفورية في الـ UI
+  // STARTING يُعتبر "يعمل" بصرياً حتى يكتمل التشغيل
+  const runtimeStatus = state.diagnostics.runtimeStatus ?? 'DISABLED';
+  const agentRunning = state.diagnostics.agentRunning || runtimeStatus === 'RUNNING' || runtimeStatus === 'DEGRADED' || runtimeStatus === 'STARTING';
 
   const handleToggleAgent = async () => {
     if (agentToggleLoading) return;
     setAgentToggleLoading(true);
+    // تحديث بصري فوري قبل انتهاء async — المستخدم يرى التغيير على الفور
     try {
       if (agentRunning) {
         await setEnabled(false);
         showActionFeedback('تم إيقاف الوكيل');
       } else {
         await setEnabled(true);
-        showActionFeedback('تم تشغيل الوكيل');
+        showActionFeedback('جاري تشغيل الوكيل...');
       }
     } finally {
       setAgentToggleLoading(false);

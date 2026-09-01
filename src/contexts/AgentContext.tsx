@@ -973,57 +973,91 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
     }
   }, [processMessage]);
 
+  /** مساعد داخلي: يُشغّل runtime + realtime + يجلب الطلبات فوراً */
+  const doStartAgent = useCallback(async (currentSettings: AgentSettings, currentDevice: DeviceState) => {
+    const online = await checkOnline();
+    const registered = Boolean(currentDevice.deviceId && currentDevice.deviceToken);
+
+    // تحديث فوري للـ UI — يُظهر "جاري التشغيل" قبل انتهاء startRuntime
+    setState((s) => ({
+      ...s,
+      diagnostics: {
+        ...s.diagnostics,
+        runtimeStatus: 'STARTING',
+        runtimeReason: null,
+        agentRunning: false,
+      },
+    }));
+
+    await startRuntime({
+      enabled: true,
+      deviceRegistered: registered,
+      online,
+      tick: async () => {
+        try {
+          await runSyncEngine(currentDevice);
+          const rt = stateRef.current.diagnostics.realtimeStatus ?? 'unknown';
+          return { ok: true, realtimeStatus: rt };
+        } catch (err) {
+          return { ok: false, error: err instanceof Error ? err.message : 'tick_error' };
+        }
+      },
+      onStatusChange: (snapshot) => {
+        setState((s) => ({
+          ...s,
+          diagnostics: {
+            ...s.diagnostics,
+            runtimeStatus: snapshot.status,
+            runtimeReason: snapshot.reason,
+            agentRunning: snapshot.isProcessing,
+          },
+        }));
+      },
+    });
+
+    // تشغيل realtime فوراً بدل الانتظار لـ useEffect
+    if (currentSettings.activeServerProfileId && currentDevice.deviceId) {
+      startRealtimeSync(
+        (status) => {
+          setState((s) => ({
+            ...s,
+            isPolling: status === 'connected' || status === 'disconnected',
+            diagnostics: { ...s.diagnostics, realtimeStatus: status },
+          }));
+        },
+        async () => { await refreshOrders(); }
+      );
+      // جلب الطلبات فوراً عند التشغيل
+      refreshOrders().catch(() => undefined);
+    }
+  }, [checkOnline, stateRef, refreshOrders]);
+
   const setEnabled = useCallback(async (enabled: boolean) => {
     const next = { ...settings, enabled };
     setSettings(next);
     await saveSettings(next);
 
     if (enabled) {
-      // بدء runtime حقيقي بعد تفعيل الوكيل
-      const online = await checkOnline();
-      const registered = Boolean(deviceState.deviceId && deviceState.deviceToken);
-      await startRuntime({
-        enabled: true,
-        deviceRegistered: registered,
-        online,
-        tick: async () => {
-          try {
-            await runSyncEngine(deviceState);
-            const rt = stateRef.current.diagnostics.realtimeStatus ?? 'unknown';
-            return { ok: true, realtimeStatus: rt };
-          } catch (err) {
-            return { ok: false, error: err instanceof Error ? err.message : 'tick_error' };
-          }
-        },
-        onStatusChange: (snapshot) => {
-          setState((s) => ({
-            ...s,
-            diagnostics: {
-              ...s.diagnostics,
-              runtimeStatus: snapshot.status,
-              runtimeReason: snapshot.reason,
-              // agentRunning يُحسب من runtime حقيقي: RUNNING أو DEGRADED
-              agentRunning: snapshot.isProcessing,
-            },
-          }));
-        },
-      });
+      await doStartAgent(next, deviceState);
     } else {
       stopRuntime();
+      stopRealtimeSync();
       setState((s) => ({
         ...s,
+        isPolling: false,
         diagnostics: {
           ...s.diagnostics,
           runtimeStatus: 'DISABLED',
           runtimeReason: null,
           agentRunning: false,
+          realtimeStatus: 'disconnected',
         },
       }));
     }
 
     // تحديث diagnostics لتعكس الحالة الحقيقية
     await runDiagnostics();
-  }, [settings, deviceState, checkOnline, stateRef, runDiagnostics]);
+  }, [settings, deviceState, doStartAgent, runDiagnostics]);
 
   const saveAgentSettings = useCallback(async (next: AgentSettings) => {
     setSettings(next);
@@ -1245,39 +1279,24 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
     }
   }, [state.connectionStatus, state.isReady, deviceState.deviceId, settings.enabled, settings.activeServerProfileId, syncOfflineQueue, refreshOrders]);
 
-  // بدء/إيقاف realtime sync فقط. الـ Polling يتم داخل realtimeSync كاحتياط.
+  // autoStart: إذا كان الوكيل مفعّلاً في الإعدادات، يبدأ تلقائياً عند إتمام التهيئة
   useEffect(() => {
     if (!initDone || !settings.enabled || !deviceState.deviceId || !settings.activeServerProfileId) {
-      stopRealtimeSync();
-      setState((s) => ({
-        ...s,
-        isPolling: false,
-        diagnostics: { ...s.diagnostics, realtimeStatus: 'disconnected' },
-      }));
-      return;
-    }
-
-    setState((s) => ({ ...s, isPolling: true }));
-    startRealtimeSync(
-      (status) => {
+      // إيقاف realtime إذا لم تكتمل الشروط
+      if (initDone && (!settings.enabled || !deviceState.deviceId || !settings.activeServerProfileId)) {
+        stopRealtimeSync();
         setState((s) => ({
           ...s,
-          // isPolling = true فقط إذا كان realtime فعلاً يعمل (connected أو محاولة)
-          // polling = fallback وليس "connected"
-          isPolling: status === 'connected' || status === 'disconnected',
-          diagnostics: { ...s.diagnostics, realtimeStatus: status },
+          isPolling: false,
+          diagnostics: { ...s.diagnostics, realtimeStatus: 'disconnected' },
         }));
-      },
-      async () => {
-        await refreshOrders();
       }
-    );
-    refreshOrders();
-
-    return () => {
-      stopRealtimeSync();
-    };
-  }, [initDone, settings.enabled, settings.activeServerProfileId, deviceState.deviceId, refreshOrders]);
+      return;
+    }
+    // الوكيل مفعّل + الجهاز مسجّل + خادم نشط → تشغيل تلقائي
+    doStartAgent(settings, deviceState).catch(() => undefined);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initDone]);
 
   const value = useMemo(
     () => ({
