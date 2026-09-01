@@ -42,13 +42,14 @@ export async function checkNetworkOnline(): Promise<boolean> {
   }
 }
 
-/** جلب الطلبات المعلقة من الخادم وتخزينها محلياً مع الحفاظ على timestamps */
+/** جلب الطلبات من الخادم وتخزينها محلياً — يجلب كل الحالات لضمان اكتمال البيانات */
 export async function fetchPendingOrders(): Promise<{ ok: boolean; count?: number; error?: string }> {
   try {
     const profile = await getActiveServerProfile();
     if (!profile) return { ok: false, error: 'No active server profile' };
 
-    const result = await fetchOrders(profile, { status: 'pending', limit: 500 });
+    // جلب كل الطلبات بدون فلتر status حتى تظهر الملغية والمرفوضة والقديمة
+    const result = await fetchOrders(profile, { limit: 500 });
     if (!result.ok) return { ok: false, error: result.error || 'Failed to fetch orders' };
 
     const orders = (result.orders || []).map((o) => normalizeOrder(o as RawOrder));
