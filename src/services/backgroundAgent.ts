@@ -1,12 +1,92 @@
 import * as BackgroundTask from 'expo-background-task';
 import * as TaskManager from 'expo-task-manager';
 import * as Network from 'expo-network';
+import * as Notifications from 'expo-notifications';
+import { Platform } from 'react-native';
 import { runSyncEngine } from './syncEngine';
 import { readExistingPaymentMessages } from './smsReader';
 import { indexSmsMessage } from './localSmsIndex';
 import { logEvent } from '@/lib/database';
 
 const BACKGROUND_SYNC_TASK = 'naderpay-background-sync';
+const FOREGROUND_CHANNEL_ID = 'naderpay-foreground';
+const FOREGROUND_NOTIFICATION_ID = 'naderpay-fg-service';
+
+// ─── إعداد قناة إشعار الـ Foreground Service ───────────────────────────────
+async function ensureForegroundChannel(): Promise<void> {
+  if (Platform.OS !== 'android') return;
+  await Notifications.setNotificationChannelAsync(FOREGROUND_CHANNEL_ID, {
+    name: 'وكيل المدفوعات',
+    importance: Notifications.AndroidImportance.LOW,
+    sound: null,
+    vibrationPattern: null,
+    enableVibrate: false,
+    showBadge: false,
+    description: 'إشعار دائم يُبقي الوكيل نشطاً في الخلفية',
+  });
+}
+
+/**
+ * تشغيل Foreground Service — يُظهر إشعاراً دائماً يمنع Android من قتل العملية.
+ * يجب استدعاؤه بعد حصول التطبيق على إذن POST_NOTIFICATIONS.
+ */
+export async function startForegroundService(label?: string): Promise<void> {
+  if (Platform.OS !== 'android') return;
+  try {
+    await ensureForegroundChannel();
+    await Notifications.scheduleNotificationAsync({
+      identifier: FOREGROUND_NOTIFICATION_ID,
+      content: {
+        title: 'Nader Pay Agent',
+        body: label ?? 'الوكيل يعمل في الخلفية ويراقب المدفوعات',
+        data: { type: 'foreground_service' },
+        sticky: true,
+        autoDismiss: false,
+        priority: Notifications.AndroidNotificationPriority.LOW,
+      } as Notifications.NotificationContentInput,
+      trigger: null, // فوري
+    });
+  } catch (err) {
+    await logEvent('foreground_service_start_error', err instanceof Error ? err.message : 'unknown');
+  }
+}
+
+/**
+ * تحديث نص الإشعار الدائم (مثلاً عند معالجة طلب).
+ */
+export async function updateForegroundServiceLabel(label: string): Promise<void> {
+  if (Platform.OS !== 'android') return;
+  try {
+    await Notifications.scheduleNotificationAsync({
+      identifier: FOREGROUND_NOTIFICATION_ID,
+      content: {
+        title: 'Nader Pay Agent',
+        body: label,
+        data: { type: 'foreground_service' },
+        sticky: true,
+        autoDismiss: false,
+        priority: Notifications.AndroidNotificationPriority.LOW,
+      } as Notifications.NotificationContentInput,
+      trigger: null,
+    });
+  } catch {
+    // تجاهل هادئ — الإشعار القديم يبقى
+  }
+}
+
+/**
+ * إيقاف Foreground Service وإزالة الإشعار الدائم.
+ */
+export async function stopForegroundService(): Promise<void> {
+  if (Platform.OS !== 'android') return;
+  try {
+    await Notifications.dismissNotificationAsync(FOREGROUND_NOTIFICATION_ID);
+  } catch {
+    // ignore
+  }
+}
+
+// ─── Background Task ────────────────────────────────────────────────────────
 
 TaskManager.defineTask(BACKGROUND_SYNC_TASK, async () => {
   try {

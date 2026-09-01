@@ -32,7 +32,7 @@ import {
   getRuntimeSnapshot,
 } from '@/services/agentRuntime';
 import { verifyMessageSource } from '@/services/sourceVerification';
-import { registerBackgroundSync, unregisterBackgroundSync } from '@/services/backgroundAgent';
+import { registerBackgroundSync, unregisterBackgroundSync, startForegroundService, stopForegroundService } from '@/services/backgroundAgent';
 import { getPermissionSnapshot, requestSmsPermission } from '@/services/permissionManager';
 import { buildStatusSnapshot } from '@/services/statusEngine';
 import { listProviderSources } from '@/services/providerSourceService';
@@ -1079,9 +1079,13 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
 
     if (enabled) {
       await doStartAgent(next, deviceState);
+      // تشغيل Foreground Service لمنع Android من قتل العملية في الخلفية
+      startForegroundService('الوكيل يراقب المدفوعات...').catch(() => undefined);
     } else {
       stopRuntime();
       stopRealtimeSync();
+      // إيقاف Foreground Service عند تعطيل الوكيل
+      stopForegroundService().catch(() => undefined);
       setState((s) => ({
         ...s,
         isPolling: false,
@@ -1337,8 +1341,9 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
       }
       return;
     }
-    // الوكيل مفعّل + الجهاز مسجّل + خادم نشط → تشغيل تلقائي
+    // الوكيل مفعّل + الجهاز مسجّل + خادم نشط → تشغيل تلقائي + Foreground Service
     doStartAgent(settings, deviceState).catch(() => undefined);
+    startForegroundService('الوكيل يراقب المدفوعات...').catch(() => undefined);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initDone]);
 

@@ -1,5 +1,6 @@
 import { useCallback, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, Text, View } from 'react-native';
+import * as Clipboard from 'expo-clipboard';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -28,11 +29,13 @@ import {
   CloudOff,
   CloudCog,
   CloudCheck,
+  Copy,
+  Zap,
 } from 'lucide-react-native';
 
 import { useAgent } from '@/contexts/AgentContext';
 import { getActiveServerProfile } from '@/services/serverProfileManager';
-import { getLastBackendRequestMeta } from '@/services/backendConnector';
+import { getLastBackendRequestMeta, testConnection } from '@/services/backendConnector';
 import {
   getDatabaseStatus,
   getSyncStatus,
@@ -61,9 +64,12 @@ export default function DiagnosticsScreen() {
   const [testing, setTesting] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [scanning, setScanning] = useState(false);
+  const [probingBackend, setProbingBackend] = useState(false);
   const [activeProfile, setActiveProfile] = useState<ServerProfile | null>(null);
   const [lastMeta, setLastMeta] = useState<ReturnType<typeof getLastBackendRequestMeta>>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [copiedKey, setCopiedKey] = useState<string | null>(null);
+  const [responseExpanded, setResponseExpanded] = useState(false);
 
   // حالات حقيقية من diagnosticsEngine — لا fake
   const [dbStatus, setDbStatus] = useState<ReturnType<typeof getDatabaseStatus>>('READY');
@@ -122,6 +128,25 @@ export default function DiagnosticsScreen() {
     } finally {
       setTesting(false);
     }
+  };
+
+  /** اختبار الاتصال بالخادم مباشرةً وتحديث lastMeta فوراً */
+  const handleProbeBackend = async () => {
+    if (!activeProfile) return;
+    setProbingBackend(true);
+    try {
+      await testConnection(activeProfile);
+      setLastMeta(getLastBackendRequestMeta());
+      await runDiagnostics();
+    } finally {
+      setProbingBackend(false);
+    }
+  };
+
+  const copyToClipboard = async (key: string, value: string) => {
+    await Clipboard.setStringAsync(value);
+    setCopiedKey(key);
+    setTimeout(() => setCopiedKey(null), 1800);
   };
 
   const systemItems: StatusItem[] = [
@@ -378,22 +403,109 @@ export default function DiagnosticsScreen() {
           )}
         </View>
 
-        <View className="mb-6 px-4 py-5 border border-border rounded-2xl bg-card gap-4">
-          <Text className="text-sm font-semibold text-foreground">آخر طلب للخادم</Text>
-          <InfoRow label="Last Method" value={d.lastBackendMethod || '—'} />
-          <InfoRow label="Last Endpoint" value={d.lastBackendEndpoint || '—'} />
-          <InfoRow label="Last Status" value={d.lastBackendStatus ? String(d.lastBackendStatus) : '—'} />
-          <InfoRow label="Request ID" value={d.lastBackendRequestId || '—'} />
+        <View className="mb-6 px-4 py-5 border border-border rounded-2xl bg-card gap-3">
+          {/* رأس القسم مع زر إعادة الاختبار */}
+          <View className="flex-row items-center justify-between mb-1">
+            <Text className="text-sm font-semibold text-foreground">آخر طلب للخادم</Text>
+            <Pressable
+              onPress={handleProbeBackend}
+              disabled={probingBackend || !activeProfile}
+              className="flex-row items-center gap-1.5 px-3 py-1.5 rounded-full bg-primary/10 active:opacity-70"
+            >
+              {probingBackend
+                ? <ActivityIndicator size={13} color="#1d4ed8" />
+                : <Zap size={13} color="#1d4ed8" />}
+              <Text className="text-xs font-medium text-primary">اختبار الآن</Text>
+            </Pressable>
+          </View>
+
+          {/* بيانات الطلب */}
+          <CopyRow label="Method" value={d.lastBackendMethod || '—'} onCopy={copyToClipboard} copiedKey={copiedKey} />
+          <CopyRow label="Status" value={d.lastBackendStatus ? String(d.lastBackendStatus) : '—'} onCopy={copyToClipboard} copiedKey={copiedKey}
+            valueColor={
+              !d.lastBackendStatus ? '#9ca3af'
+              : d.lastBackendStatus >= 200 && d.lastBackendStatus < 300 ? '#16a34a'
+              : d.lastBackendStatus >= 500 ? '#dc2626'
+              : '#d97706'
+            }
+          />
+          <CopyRow label="Endpoint" value={d.lastBackendEndpoint || '—'} onCopy={copyToClipboard} copiedKey={copiedKey} mono />
+          <CopyRow label="Request ID" value={d.lastBackendRequestId || '—'} onCopy={copyToClipboard} copiedKey={copiedKey} mono />
+          {lastMeta?.startedAt && (
+            <CopyRow label="Started At" value={formatTime(lastMeta.startedAt)} onCopy={copyToClipboard} copiedKey={copiedKey} />
+          )}
           {lastMeta?.finishedAt && (
-            <InfoRow label="Finished At" value={formatTime(lastMeta.finishedAt)} />
+            <CopyRow label="Finished At" value={formatTime(lastMeta.finishedAt)} onCopy={copyToClipboard} copiedKey={copiedKey} />
           )}
+          {lastMeta?.startedAt && lastMeta?.finishedAt && (
+            <InfoRow label="Duration"
+              value={`${new Date(lastMeta.finishedAt).getTime() - new Date(lastMeta.startedAt).getTime()} ms`}
+            />
+          )}
+
+          {/* خطأ إن وجد */}
           {d.lastBackendError && (
-            <InfoRow label="Error" value={d.lastBackendError} />
+            <View className="mt-1 px-3 py-2.5 rounded-xl bg-destructive/8 border border-destructive/20">
+              <View className="flex-row items-center justify-between mb-1">
+                <Text className="text-xs font-semibold text-destructive">Error</Text>
+                <Pressable onPress={() => copyToClipboard('error', d.lastBackendError!)} className="active:opacity-60">
+                  <Copy size={13} color="#ef4444" />
+                </Pressable>
+              </View>
+              <Text className="text-xs text-destructive leading-5">{d.lastBackendError}</Text>
+            </View>
           )}
+
+          {/* Response Body — قابل للتوسيع */}
           {d.lastBackendResponse && (
-            <Text className="text-xs text-muted-foreground" numberOfLines={6}>
-              {d.lastBackendResponse}
-            </Text>
+            <View className="mt-1">
+              <Pressable
+                onPress={() => setResponseExpanded((v) => !v)}
+                className="flex-row items-center justify-between py-2 active:opacity-70"
+              >
+                <Text className="text-xs font-semibold text-muted-foreground">Response Body</Text>
+                <View className="flex-row items-center gap-2">
+                  <Pressable
+                    onPress={() => copyToClipboard('response', d.lastBackendResponse!)}
+                    className="p-1 active:opacity-60"
+                    hitSlop={8}
+                  >
+                    {copiedKey === 'response'
+                      ? <CheckCircle2 size={14} color="#16a34a" />
+                      : <Copy size={14} color="#9ca3af" />}
+                  </Pressable>
+                  {responseExpanded
+                    ? <ChevronUp size={14} color="#9ca3af" />
+                    : <ChevronDown size={14} color="#9ca3af" />}
+                </View>
+              </Pressable>
+              <View className="px-3 py-3 rounded-xl bg-muted border border-border">
+                <Text
+                  className="text-xs text-foreground font-mono leading-5"
+                  numberOfLines={responseExpanded ? undefined : 6}
+                >
+                  {(() => {
+                    try {
+                      return JSON.stringify(JSON.parse(d.lastBackendResponse), null, 2);
+                    } catch {
+                      return d.lastBackendResponse;
+                    }
+                  })()}
+                </Text>
+                {!responseExpanded && (
+                  <Text className="text-xs text-primary mt-1">اضغط لعرض الكل</Text>
+                )}
+              </View>
+            </View>
+          )}
+
+          {/* حالة لا يوجد بيانات */}
+          {!d.lastBackendMethod && !lastMeta && (
+            <View className="items-center py-4 gap-2">
+              <CloudOff size={28} color="#d1d5db" />
+              <Text className="text-sm text-muted-foreground">لم يتم إجراء أي طلب بعد</Text>
+              <Text className="text-xs text-muted-foreground">اضغط "اختبار الآن" لفحص الخادم</Text>
+            </View>
           )}
         </View>
 
@@ -472,11 +584,45 @@ function StatusRow({
 
 function InfoRow({ label, value }: { label: string; value: string }) {
   return (
-    <View className="flex-row justify-between py-1">
-      <Text className="text-sm text-muted-foreground">{label}</Text>
-      <Text className="text-sm font-medium text-foreground" numberOfLines={1}>
+    <View className="flex-row justify-between py-1.5 border-b border-border/50 last:border-b-0">
+      <Text className="text-xs text-muted-foreground">{label}</Text>
+      <Text className="text-xs font-medium text-foreground" numberOfLines={1} style={{ maxWidth: '60%' }}>
         {value}
       </Text>
+    </View>
+  );
+}
+
+function CopyRow({
+  label, value, onCopy, copiedKey, mono, valueColor,
+}: {
+  label: string;
+  value: string;
+  onCopy: (key: string, val: string) => void;
+  copiedKey: string | null;
+  mono?: boolean;
+  valueColor?: string;
+}) {
+  const isCopied = copiedKey === label;
+  return (
+    <View className="flex-row items-center justify-between py-1.5 border-b border-border/50 last:border-b-0">
+      <Text className="text-xs text-muted-foreground">{label}</Text>
+      <View className="flex-row items-center gap-2" style={{ maxWidth: '65%' }}>
+        <Text
+          className={`text-xs font-medium ${mono ? 'font-mono' : ''}`}
+          style={{ color: valueColor ?? '#111827' }}
+          numberOfLines={1}
+        >
+          {value}
+        </Text>
+        {value !== '—' && (
+          <Pressable onPress={() => onCopy(label, value)} className="active:opacity-60" hitSlop={8}>
+            {isCopied
+              ? <CheckCircle2 size={13} color="#16a34a" />
+              : <Copy size={13} color="#d1d5db" />}
+          </Pressable>
+        )}
+      </View>
     </View>
   );
 }
