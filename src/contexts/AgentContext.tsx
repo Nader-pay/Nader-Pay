@@ -974,6 +974,36 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
   }, [processMessage]);
 
   /** مساعد داخلي: يُشغّل runtime + realtime + يجلب الطلبات فوراً */
+  /** اختبار الاتصال بالخادم وتحديث backendStatus فوراً في الـ UI */
+  const probeBackend = useCallback(async () => {
+    const { testConnection } = await import('@/services/backendConnector');
+    const { getActiveServerProfile } = await import('@/services/serverProfileManager');
+    const profile = await getActiveServerProfile();
+    if (!profile) return;
+
+    try {
+      const result = await testConnection(profile);
+      // تحديث backendStatus مباشرةً بدون انتظار runDiagnostics الكاملة
+      setState((s) => ({
+        ...s,
+        diagnostics: {
+          ...s.diagnostics,
+          backendStatus: result.ok ? 'online' : 'error',
+          lastBackendError: result.ok ? null : (result.error ?? null),
+          lastBackendStatus: result.status ?? null,
+          activeServerProfile: profile.name,
+        },
+      }));
+      return result.ok;
+    } catch {
+      setState((s) => ({
+        ...s,
+        diagnostics: { ...s.diagnostics, backendStatus: 'error' },
+      }));
+      return false;
+    }
+  }, []);
+
   const doStartAgent = useCallback(async (currentSettings: AgentSettings, currentDevice: DeviceState) => {
     const online = await checkOnline();
     const registered = Boolean(currentDevice.deviceId && currentDevice.deviceToken);
@@ -1015,6 +1045,16 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
       },
     });
 
+    // اختبار الاتصال بالخادم فوراً → يُعالج "Backend متوقف" رغم وجود خادم مُضاف
+    if (online && currentSettings.activeServerProfileId) {
+      probeBackend().then((ok) => {
+        // إذا نجح الاتصال → جلب الطلبات مباشرةً
+        if (ok) {
+          refreshOrders().catch(() => undefined);
+        }
+      }).catch(() => undefined);
+    }
+
     // تشغيل realtime فوراً بدل الانتظار لـ useEffect
     if (currentSettings.activeServerProfileId && currentDevice.deviceId) {
       startRealtimeSync(
@@ -1027,10 +1067,10 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
         },
         async () => { await refreshOrders(); }
       );
-      // جلب الطلبات فوراً عند التشغيل
+      // جلب الطلبات دائماً عند التشغيل (بغض النظر عن نتيجة probeBackend)
       refreshOrders().catch(() => undefined);
     }
-  }, [checkOnline, stateRef, refreshOrders]);
+  }, [checkOnline, stateRef, refreshOrders, probeBackend]);
 
   const setEnabled = useCallback(async (enabled: boolean) => {
     const next = { ...settings, enabled };
@@ -1214,6 +1254,10 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
         const online = await checkOnline();
         if (online) {
           reconnectRealtime().catch(() => undefined);
+          // إعادة فحص الخادم + جلب الطلبات عند العودة للواجهة
+          probeBackend().then((ok) => {
+            if (ok) refreshOrders().catch(() => undefined);
+          }).catch(() => undefined);
         }
         resumeRuntime(online).catch(() => undefined);
         runDiagnostics().catch(() => undefined);
