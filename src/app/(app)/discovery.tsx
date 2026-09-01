@@ -59,6 +59,7 @@ import { checkSmsPermission, requestSmsPermission } from '@/services/smsReader';
 import {
   discoverSmsSources,
   type SmsSource,
+  type SmsSourceVerificationResult,
   verifySourceWithParser,
 } from '@/services/sourceDiscovery';
 import { upsertProviderSource, type ProviderSource } from '@/services/providerSourceService';
@@ -105,6 +106,7 @@ export default function SourceDiscoveryScreen() {
   const [selectedSourceProvider, setSelectedSourceProvider] = useState<ProviderName | null>(null);
   const [verifying, setVerifying] = useState(false);
   const [verifyResult, setVerifyResult] = useState<{ ok: boolean; message: string } | null>(null);
+  const [detailedResult, setDetailedResult] = useState<SmsSourceVerificationResult | null>(null);
   const [expandedSourceId, setExpandedSourceId] = useState<string | null>(null);
 
   const checkPermission = useCallback(async () => {
@@ -119,6 +121,7 @@ export default function SourceDiscoveryScreen() {
       const discovered = await discoverSmsSources();
       setSources(discovered);
       setVerifyResult(null);
+      setDetailedResult(null);
     } catch (err) {
       setVerifyResult({ ok: false, message: err instanceof Error ? err.message : 'فشل قراءة رسائل الجهاز' });
     } finally {
@@ -176,8 +179,14 @@ export default function SourceDiscoveryScreen() {
         displayName: source.displayName,
         rawSender: source.sourceId,
         samples: source.rawMessages.map((m) => m.body.slice(0, 120)),
+        // تفاصيل التوثيق المفصّل
+        identityStatus: result.identityStatus,
+        messageAccessStatus: result.messageAccessStatus,
+        classificationSummary: result.classificationSummary,
+        transactionSampleStatus: result.transactionSampleStatus,
+        parserStatus: result.parserStatus,
       },
-      parserVersion: '1',
+      parserVersion: '2',
       receivingAccount: null,
       approvedSenderIdentifiers: [source.sourceId],
       messagePatterns: [],
@@ -194,7 +203,7 @@ export default function SourceDiscoveryScreen() {
     await upsertProviderSource(newSource);
     setVerifying(false);
     setSelectedSource(null);
-    setVerifyResult({ ok: result.passed, message: result.reason });
+    setDetailedResult(result);
   };
 
   const renderItem = ({ item: source }: { item: SmsSource & { score: number } }) => {
@@ -387,8 +396,8 @@ export default function SourceDiscoveryScreen() {
           </>
         )}
 
-        {/* نتيجة التوثيق */}
-        {verifyResult && (
+        {/* نتيجة التوثيق العامة */}
+        {verifyResult && !detailedResult && (
           <Alert
             icon={verifyResult.ok ? CheckCircle2 : XCircle}
             variant={verifyResult.ok ? 'default' : 'destructive'}
@@ -397,6 +406,69 @@ export default function SourceDiscoveryScreen() {
             <AlertTitle>{verifyResult.ok ? 'تم التوثيق بنجاح' : 'تنبيه'}</AlertTitle>
             <AlertDescription>{verifyResult.message}</AlertDescription>
           </Alert>
+        )}
+
+        {/* نتيجة التوثيق المفصّلة — 4 حالات مستقلة */}
+        {detailedResult && (
+          <View className="mb-4 border border-border rounded-2xl bg-card overflow-hidden">
+            <View className="px-4 pt-4 pb-3 border-b border-border">
+              <View className="flex-row items-center gap-2">
+                {detailedResult.passed
+                  ? <ShieldCheck size={18} color="#16a34a" />
+                  : <ShieldAlert size={18} color="#ef4444" />}
+                <Text className="text-sm font-bold text-foreground">
+                  {detailedResult.passed ? 'تم التوثيق بنجاح' : 'فشل التوثيق'}
+                </Text>
+              </View>
+              <Text className="text-xs text-muted-foreground mt-1 leading-5">
+                {detailedResult.reason}
+              </Text>
+            </View>
+            {/* الحالات الأربع */}
+            <View className="px-4 py-3 gap-2">
+              <VerifRow
+                label="هوية المصدر"
+                status={detailedResult.identityStatus === 'VERIFIED' ? 'ok' : 'fail'}
+                value={detailedResult.identityStatus === 'VERIFIED' ? 'مؤكدة' : 'غير محددة'}
+              />
+              <VerifRow
+                label="قراءة الرسائل"
+                status={detailedResult.messageAccessStatus === 'AVAILABLE' ? 'ok' : 'fail'}
+                value={detailedResult.messageAccessStatus === 'AVAILABLE'
+                  ? `متاحة (${detailedResult.messageCount} رسالة)`
+                  : 'غير متاحة'}
+              />
+              <VerifRow
+                label="رسالة Transaction"
+                status={detailedResult.transactionSampleStatus === 'FOUND' ? 'ok' : 'warn'}
+                value={detailedResult.transactionSampleStatus === 'FOUND'
+                  ? 'موجودة'
+                  : 'غير موجودة حالياً'}
+              />
+              <VerifRow
+                label="Parser"
+                status={
+                  detailedResult.parserStatus === 'PASSED' ? 'ok'
+                  : detailedResult.parserStatus === 'NOT_TESTED' ? 'warn'
+                  : 'fail'
+                }
+                value={
+                  detailedResult.parserStatus === 'PASSED' ? 'ناجح'
+                  : detailedResult.parserStatus === 'NOT_TESTED' ? 'لم يُختبر'
+                  : 'فشل'
+                }
+              />
+              {/* ملخص تصنيف الرسائل */}
+              <View className="mt-1 pt-2 border-t border-border">
+                <Text className="text-xs text-muted-foreground">
+                  تصنيف الرسائل: {detailedResult.classificationSummary.transaction} معاملات •{' '}
+                  {detailedResult.classificationSummary.balance} رصيد •{' '}
+                  {detailedResult.classificationSummary.otherFinancial} مالية أخرى •{' '}
+                  {detailedResult.classificationSummary.nonFinancial} غير مالية
+                </Text>
+              </View>
+            </View>
+          </View>
         )}
       </View>
 
@@ -479,6 +551,22 @@ export default function SourceDiscoveryScreen() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+    </View>
+  );
+}
+
+// ─── VerifRow Component ───────────────────────────────────────────────────────
+
+function VerifRow({ label, status, value }: { label: string; status: 'ok' | 'warn' | 'fail'; value: string }) {
+  const colors = { ok: '#16a34a', warn: '#d97706', fail: '#ef4444' };
+  const icons = { ok: '✓', warn: '⚠', fail: '✗' };
+  return (
+    <View className="flex-row items-center justify-between">
+      <Text className="text-xs text-muted-foreground">{label}</Text>
+      <View className="flex-row items-center gap-1">
+        <Text style={{ color: colors[status], fontSize: 11, fontWeight: '700' }}>{icons[status]}</Text>
+        <Text style={{ color: colors[status] }} className="text-xs font-medium">{value}</Text>
+      </View>
     </View>
   );
 }

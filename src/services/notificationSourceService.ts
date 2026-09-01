@@ -69,16 +69,26 @@ const KNOWN_APP_NAMES: Record<string, string> = {
 
 /**
  * اكتشاف التطبيقات المثبتة فعلياً على الجهاز من PackageManager.
- * يعيد قائمة التطبيقات المالية المحتملة.
  *
- * - إذا كان NativeModule متاحاً: يقرأ من PackageManager الحقيقي.
- * - إذا لم يكن متاحاً: يعيد قائمة فارغة (لا mock).
+ * - إذا كان NativeModule متاحاً: يقرأ من PackageManager الحقيقي (كل التطبيقات).
+ * - إذا لم يكن متاحاً: يعيد قائمة فارغة — لا mock، المستخدم يُضيف يدوياً.
+ *
+ * ملاحظة: financialOnly=false افتراضياً — يعرض كل التطبيقات ويُتيح للمستخدم
+ * الاختيار بنفسه. التصفية الذكية اختيارية وليست شرطاً للعرض.
  */
 export async function discoverInstalledPaymentApps(): Promise<InstalledApp[]> {
   if (process.env.EXPO_OS === 'web') return [];
 
   try {
-    const apps = await getInstalledApps(true /* financialOnly */);
+    // financialOnly=false — نعرض كل التطبيقات، المستخدم يختار
+    const apps = await getInstalledApps(false);
+
+    if (__DEV__) {
+      console.log(`[notificationSourceService] PackageManager: ${apps.length} تطبيق`);
+      if (apps.length === 0) {
+        console.warn('[notificationSourceService] PackageManager أعاد 0 تطبيقات — NativeModule قد لا يكون متاحاً');
+      }
+    }
 
     // إثراء displayName من القائمة المرجعية عند الحاجة
     return apps.map((app) => ({
@@ -88,6 +98,28 @@ export async function discoverInstalledPaymentApps(): Promise<InstalledApp[]> {
   } catch (err) {
     console.warn('[notificationSourceService] discoverInstalledPaymentApps error:', err);
     return [];
+  }
+}
+
+/**
+ * تشخيص سبب إرجاع PackageManager قائمة فارغة.
+ * يُستخدم في UI لعرض رسالة تشخيصية دقيقة بدلاً من "لا توجد تطبيقات مالية".
+ */
+export type PackageManagerDiagnostic =
+  | 'NO_NATIVE_MODULE'      // NativeModule غير متاح
+  | 'PERMISSION_ERROR'      // خطأ صلاحية
+  | 'EMPTY_RESULT'          // PackageManager أعاد 0
+  | 'OK';                   // يعمل
+
+export async function diagnosePackageManager(): Promise<PackageManagerDiagnostic> {
+  if (process.env.EXPO_OS === 'web') return 'NO_NATIVE_MODULE';
+  try {
+    const apps = await getInstalledApps(false);
+    return apps.length > 0 ? 'OK' : 'EMPTY_RESULT';
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg.toLowerCase().includes('permission')) return 'PERMISSION_ERROR';
+    return 'NO_NATIVE_MODULE';
   }
 }
 

@@ -6,9 +6,10 @@
  *
  * السيناريو:
  * 1. فحص حالة Notification Listener Permission
- * 2. قراءة التطبيقات المثبتة من PackageManager (تطبيقات مالية فقط)
+ * 2. قراءة التطبيقات المثبتة من PackageManager (كل التطبيقات — ليس financial filter فقط)
  * 3. عرض كل تطبيق مع: displayName + packageId + installStatus + listenerStatus
- * 4. اختيار التطبيق → ضغط "توثيق" → حفظ packageId كمصدر موثوق
+ * 4. اختيار التطبيق → dialog اختيار Provider → حفظ packageId كمصدر موثوق
+ * 5. إضافة يدوية للتطبيقات التي لا يعرفها PackageManager
  * ═══════════════════════════════════════════════════════════════════
  */
 
@@ -18,7 +19,9 @@ import {
   FlatList,
   Pressable,
   RefreshControl,
+  ScrollView,
   Text,
+  TextInput,
   View,
 } from 'react-native';
 import { useFocusEffect, useRouter } from 'expo-router';
@@ -29,6 +32,8 @@ import {
   Bell,
   BellOff,
   CheckCircle2,
+  Info,
+  PlusCircle,
   RefreshCw,
   Settings,
   ShieldAlert,
@@ -49,9 +54,18 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import { cn } from '@/lib/utils';
 import {
   discoverInstalledPaymentApps,
+  diagnosePackageManager,
   getAllNotificationSources,
   getNotificationListenerState,
   openNotificationListenerSettings,
@@ -61,8 +75,9 @@ import {
   type NotificationListenerState,
   type NotificationSource,
   type NotificationSourceStatus,
+  type PackageManagerDiagnostic,
 } from '@/services/notificationSourceService';
-import type { RelativePathString } from 'expo-router';
+import type { ProviderName } from '@/types/agent';
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
@@ -70,6 +85,13 @@ type AppRow = InstalledApp & {
   savedSource: NotificationSource | undefined;
   isActive: boolean;
 };
+
+const PROVIDERS: { key: ProviderName; label: string }[] = [
+  { key: 'vodafone_cash', label: 'Vodafone Cash' },
+  { key: 'orange_cash',   label: 'Orange Cash' },
+  { key: 'insta_pay',     label: 'InstaPay' },
+  { key: 'bank_transfer', label: 'تحويل بنكي' },
+];
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
@@ -85,6 +107,17 @@ export default function NotificationSourcesScreen() {
   const [savingPkg, setSavingPkg] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<{ ok: boolean; message: string } | null>(null);
   const [revokeTarget, setRevokeTarget] = useState<NotificationSource | null>(null);
+  const [pkgDiagnostic, setPkgDiagnostic] = useState<PackageManagerDiagnostic | null>(null);
+
+  // Provider selection dialog
+  const [providerDialogRow, setProviderDialogRow] = useState<AppRow | null>(null);
+  const [selectedProvider, setSelectedProvider] = useState<ProviderName>('insta_pay');
+
+  // Manual add dialog
+  const [manualAddOpen, setManualAddOpen] = useState(false);
+  const [manualPackage, setManualPackage] = useState('');
+  const [manualName, setManualName] = useState('');
+  const [manualProvider, setManualProvider] = useState<ProviderName>('insta_pay');
 
   // ─── Load ────────────────────────────────────────────────────────────────────
 
@@ -92,14 +125,16 @@ export default function NotificationSourcesScreen() {
     if (showLoader) setLoading(true);
     setFeedback(null);
     try {
-      const [state, apps, sources] = await Promise.all([
+      const [state, apps, sources, diag] = await Promise.all([
         getNotificationListenerState(),
         discoverInstalledPaymentApps(),
         getAllNotificationSources(),
+        diagnosePackageManager(),
       ]);
 
       setListenerState(state);
       setSavedSources(sources);
+      setPkgDiagnostic(diag);
 
       // دمج التطبيقات المثبتة مع المصادر المحفوظة
       const rows: AppRow[] = apps.map((app) => {
@@ -112,7 +147,7 @@ export default function NotificationSourcesScreen() {
         };
       });
 
-      // إضافة المصادر المحفوظة التي لم تُوجَد في التطبيقات المثبتة (مثبتة سابقاً ثم حُذفت)
+      // إضافة المصادر المحفوظة التي لم تُوجَد في التطبيقات المثبتة
       const pkgsInRows = new Set(rows.map((r) => r.packageName));
       for (const src of sources) {
         if (!pkgsInRows.has(src.packageId)) {
@@ -125,7 +160,6 @@ export default function NotificationSourcesScreen() {
         }
       }
 
-      // ترتيب: الموثَّق أولاً، ثم الأقدم
       rows.sort((a, b) => {
         if (a.isActive && !b.isActive) return -1;
         if (!a.isActive && b.isActive) return 1;
@@ -153,14 +187,20 @@ export default function NotificationSourcesScreen() {
 
   // ─── Actions ──────────────────────────────────────────────────────────────────
 
-  const handleToggle = useCallback(async (row: AppRow) => {
+  const handleToggle = useCallback((row: AppRow) => {
     if (row.isActive && row.savedSource) {
-      // طلب إلغاء التوثيق — يُفتح AlertDialog
       setRevokeTarget(row.savedSource);
       return;
     }
+    // فتح dialog اختيار Provider
+    setSelectedProvider('insta_pay');
+    setProviderDialogRow(row);
+  }, []);
 
-    // توثيق جديد
+  const confirmSaveWithProvider = useCallback(async () => {
+    const row = providerDialogRow;
+    if (!row) return;
+    setProviderDialogRow(null);
     setSavingPkg(row.packageName);
     setFeedback(null);
     try {
@@ -170,7 +210,7 @@ export default function NotificationSourcesScreen() {
         currentState === 'enabled' ? 'verified' : 'permission_required';
 
       await saveNotificationSource({
-        providerId: 'insta_pay',   // افتراضي للتطبيقات المالية المصرية
+        providerId: selectedProvider,
         packageId: row.packageName,
         displayName: row.displayName,
         sourceType: 'notification',
@@ -184,7 +224,7 @@ export default function NotificationSourcesScreen() {
       setFeedback({
         ok: true,
         message: currentState === 'enabled'
-          ? `✓ تم توثيق ${row.displayName} كمصدر إشعارات موثوق.`
+          ? `✓ تم توثيق ${row.displayName} كمصدر إشعارات موثوق (${PROVIDERS.find(p => p.key === selectedProvider)?.label}).`
           : `تم حفظ ${row.displayName}. فعّل Notification Listener للاستقبال الفعلي.`,
       });
       await loadAll(false);
@@ -196,7 +236,7 @@ export default function NotificationSourcesScreen() {
     } finally {
       setSavingPkg(null);
     }
-  }, [loadAll]);
+  }, [providerDialogRow, selectedProvider, loadAll]);
 
   const confirmRevoke = useCallback(async () => {
     if (!revokeTarget) return;
@@ -215,9 +255,46 @@ export default function NotificationSourcesScreen() {
 
   const handleOpenSettings = useCallback(async () => {
     await openNotificationListenerSettings();
-    // إعادة الفحص بعد العودة من الإعدادات
     setTimeout(() => loadAll(false), 600);
   }, [loadAll]);
+
+  const handleManualAdd = useCallback(async () => {
+    const pkg = manualPackage.trim();
+    const name = manualName.trim() || pkg;
+    if (!pkg) return;
+    setManualAddOpen(false);
+    setSavingPkg(pkg);
+    setFeedback(null);
+    try {
+      const now = new Date().toISOString();
+      const currentState = await getNotificationListenerState();
+      const status: NotificationSourceStatus =
+        currentState === 'enabled' ? 'verified' : 'permission_required';
+
+      await saveNotificationSource({
+        providerId: manualProvider,
+        packageId: pkg,
+        displayName: name,
+        sourceType: 'notification',
+        status,
+        notificationListenerEnabled: currentState === 'enabled',
+        verifiedAt: now,
+        createdAt: now,
+        updatedAt: now,
+      });
+      setManualPackage('');
+      setManualName('');
+      setFeedback({ ok: true, message: `✓ تم إضافة ${name} يدوياً كمصدر إشعارات.` });
+      await loadAll(false);
+    } catch (err) {
+      setFeedback({
+        ok: false,
+        message: err instanceof Error ? err.message : 'فشل الإضافة اليدوية.',
+      });
+    } finally {
+      setSavingPkg(null);
+    }
+  }, [manualPackage, manualName, manualProvider, loadAll]);
 
   // ─── Render Item ──────────────────────────────────────────────────────────────
 
@@ -234,7 +311,6 @@ export default function NotificationSourcesScreen() {
         style={{ borderCurve: 'continuous' } as object}
       >
         <View className="p-4 gap-3">
-          {/* معلومات التطبيق */}
           <View className="flex-row items-center gap-3">
             <View
               className="w-10 h-10 rounded-full items-center justify-center shrink-0"
@@ -248,15 +324,16 @@ export default function NotificationSourcesScreen() {
               <Text className="text-base font-semibold text-foreground" numberOfLines={1}>
                 {row.displayName}
               </Text>
-              <Text
-                className="text-xs text-muted-foreground font-mono"
-                numberOfLines={1}
-              >
+              <Text className="text-xs text-muted-foreground font-mono" numberOfLines={1}>
                 {row.packageName}
               </Text>
+              {row.savedSource && (
+                <Text className="text-xs text-muted-foreground">
+                  {PROVIDERS.find(p => p.key === row.savedSource?.providerId)?.label ?? row.savedSource.providerId}
+                </Text>
+              )}
             </View>
 
-            {/* زر التوثيق / الإلغاء */}
             <Pressable
               onPress={() => handleToggle(row)}
               disabled={isBusy}
@@ -279,18 +356,27 @@ export default function NotificationSourcesScreen() {
             </Pressable>
           </View>
 
-          {/* حالة التوثيق والـ Listener */}
           <View className="flex-row items-center gap-2">
-            <View
-              className="w-2 h-2 rounded-full"
-              style={{ backgroundColor: statusLabel.color }}
-            />
+            <View className="w-2 h-2 rounded-full" style={{ backgroundColor: statusLabel.color }} />
             <Text className="text-xs text-muted-foreground flex-1">{statusLabel.text}</Text>
           </View>
         </View>
       </View>
     );
   }, [savingPkg, listenerState, handleToggle]);
+
+  // ─── Empty State ──────────────────────────────────────────────────────────────
+
+  const emptyDiagnosticText = (): string => {
+    if (process.env.EXPO_OS === 'web') return 'الاكتشاف يعمل على Android فقط.';
+    if (pkgDiagnostic === 'NO_NATIVE_MODULE')
+      return 'NativeModule غير متاح — لا يستطيع التطبيق قراءة التطبيقات المثبتة. استخدم "إضافة يدوي" لإضافة تطبيق بـ Package ID.';
+    if (pkgDiagnostic === 'PERMISSION_ERROR')
+      return 'خطأ صلاحية عند قراءة PackageManager. تأكد من إعدادات التطبيق.';
+    if (pkgDiagnostic === 'EMPTY_RESULT')
+      return 'PackageManager أعاد 0 تطبيقات — قد يكون التصفية تمنع ظهور التطبيقات. استخدم "إضافة يدوي".';
+    return 'لا توجد تطبيقات مكتشفة. استخدم "إضافة يدوي" لإضافة تطبيق بـ Package ID.';
+  };
 
   // ─── Render ───────────────────────────────────────────────────────────────────
 
@@ -317,13 +403,23 @@ export default function NotificationSourcesScreen() {
                 : 'اختر تطبيقات الدفع التي تستقبل منها إشعارات'}
             </Text>
           </View>
-          <Pressable
-            onPress={() => loadAll(false)}
-            disabled={loading || refreshing}
-            className="w-10 h-10 items-center justify-center border border-border rounded-full active:opacity-70 disabled:opacity-40"
-          >
-            <RefreshCw size={18} color="#6b7280" />
-          </Pressable>
+          <View className="flex-row items-center gap-2">
+            {/* زر إضافة يدوي */}
+            <Pressable
+              onPress={() => { setManualPackage(''); setManualName(''); setManualProvider('insta_pay'); setManualAddOpen(true); }}
+              className="flex-row items-center gap-1.5 px-3 py-2 rounded-xl border border-border bg-card active:opacity-70"
+            >
+              <PlusCircle size={15} color="#6b7280" />
+              <Text className="text-xs text-foreground">إضافة</Text>
+            </Pressable>
+            <Pressable
+              onPress={() => loadAll(false)}
+              disabled={loading || refreshing}
+              className="w-10 h-10 items-center justify-center border border-border rounded-full active:opacity-70 disabled:opacity-40"
+            >
+              <RefreshCw size={18} color="#6b7280" />
+            </Pressable>
+          </View>
         </View>
 
         {/* بطاقة حالة Notification Listener */}
@@ -338,7 +434,7 @@ export default function NotificationSourcesScreen() {
                 Notification Listener غير مفعّل
               </Text>
               <Text className="text-xs text-amber-700 leading-4">
-                التطبيقات المُوثَّقة لن ترسل إشعارات حتى تُفعّله.
+                التطبيقات الموثَّقة لن ترسل إشعارات حتى تُفعّله.
               </Text>
             </View>
             <Pressable
@@ -405,27 +501,35 @@ export default function NotificationSourcesScreen() {
               <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
             }
             ListEmptyComponent={
-              <View className="items-center py-16 gap-4">
+              <View className="items-center py-12 gap-4">
                 <View className="w-16 h-16 rounded-full bg-muted items-center justify-center">
                   <Bell size={32} color="#d1d5db" />
                 </View>
-                <View className="items-center gap-1">
+                <View className="items-center gap-2">
                   <Text className="text-base font-medium text-foreground">
-                    لم يُعثر على تطبيقات مالية
+                    لم يُعثر على تطبيقات
                   </Text>
-                  <Text className="text-sm text-muted-foreground text-center leading-6 px-6">
-                    {process.env.EXPO_OS === 'web'
-                      ? 'الاكتشاف يعمل على Android فقط.'
-                      : 'لا توجد تطبيقات دفع مثبتة على هذا الجهاز، أو أن الـ PackageManager لم يُرجع نتائج.'}
+                  <Text className="text-sm text-muted-foreground text-center leading-6 px-4">
+                    {emptyDiagnosticText()}
                   </Text>
                 </View>
+                {/* زر إضافة يدوي في empty state */}
                 <Pressable
-                  onPress={() => router.push('/(app)/discovery' as RelativePathString)}
-                  className="flex-row items-center gap-2 px-4 py-2.5 rounded-xl border border-border bg-card active:opacity-70"
+                  onPress={() => { setManualPackage(''); setManualName(''); setManualProvider('insta_pay'); setManualAddOpen(true); }}
+                  className="flex-row items-center gap-2 px-4 py-2.5 rounded-xl bg-primary active:opacity-70"
                 >
-                  <ArrowLeft size={14} color="#6b7280" />
-                  <Text className="text-sm text-foreground">اكتشاف مصادر SMS بدلاً</Text>
+                  <PlusCircle size={16} color="#ffffff" />
+                  <Text className="text-sm font-semibold text-primary-foreground">إضافة تطبيق يدوياً</Text>
                 </Pressable>
+                {/* تشخيص PackageManager */}
+                {pkgDiagnostic && pkgDiagnostic !== 'OK' && (
+                  <View className="flex-row items-center gap-2 px-4 py-3 rounded-xl bg-muted mt-1 mx-2">
+                    <Info size={14} color="#6b7280" />
+                    <Text className="text-xs text-muted-foreground flex-1 leading-4">
+                      تشخيص PackageManager: {pkgDiagnostic}
+                    </Text>
+                  </View>
+                )}
               </View>
             }
             ListHeaderComponent={
@@ -444,6 +548,137 @@ export default function NotificationSourcesScreen() {
         )}
       </View>
 
+      {/* Dialog اختيار Provider عند التوثيق */}
+      <Dialog open={providerDialogRow !== null} onOpenChange={(open) => !open && setProviderDialogRow(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>ربط بطريقة الدفع</DialogTitle>
+            <DialogDescription>
+              اختر طريقة الدفع التي ترتبط بإشعارات هذا التطبيق.
+            </DialogDescription>
+          </DialogHeader>
+          {providerDialogRow && (
+            <View className="gap-3">
+              <View className="p-3 border border-border rounded-xl bg-muted gap-1">
+                <Text className="text-sm font-semibold text-foreground" numberOfLines={1}>
+                  {providerDialogRow.displayName}
+                </Text>
+                <Text className="text-xs font-mono text-muted-foreground" numberOfLines={1}>
+                  {providerDialogRow.packageName}
+                </Text>
+              </View>
+              <Text className="text-sm font-medium text-foreground">طريقة الدفع</Text>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerClassName="gap-2">
+                {PROVIDERS.map((p) => (
+                  <Pressable
+                    key={p.key}
+                    onPress={() => setSelectedProvider(p.key)}
+                    className={cn(
+                      'px-3 py-2 rounded-full border active:opacity-70',
+                      selectedProvider === p.key ? 'bg-primary border-primary' : 'bg-card border-border'
+                    )}
+                  >
+                    <Text className={cn(
+                      'text-xs font-medium',
+                      selectedProvider === p.key ? 'text-primary-foreground' : 'text-foreground'
+                    )}>
+                      {p.label}
+                    </Text>
+                  </Pressable>
+                ))}
+              </ScrollView>
+            </View>
+          )}
+          <DialogFooter>
+            <Pressable
+              onPress={() => setProviderDialogRow(null)}
+              className="px-4 py-2.5 rounded-xl border border-border active:opacity-70"
+            >
+              <Text className="text-sm font-medium text-foreground">إلغاء</Text>
+            </Pressable>
+            <Pressable
+              onPress={confirmSaveWithProvider}
+              className="px-4 py-2.5 rounded-xl bg-primary active:opacity-70"
+            >
+              <Text className="text-sm font-semibold text-primary-foreground">توثيق</Text>
+            </Pressable>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Dialog إضافة يدوي */}
+      <Dialog open={manualAddOpen} onOpenChange={(open) => !open && setManualAddOpen(false)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>إضافة تطبيق يدوياً</DialogTitle>
+            <DialogDescription>
+              أدخل Package ID للتطبيق الذي تريد ربط إشعاراته بطريقة دفع.
+            </DialogDescription>
+          </DialogHeader>
+          <View className="gap-3">
+            <View className="gap-1.5">
+              <Text className="text-sm font-medium text-foreground">Package ID *</Text>
+              <TextInput
+                value={manualPackage}
+                onChangeText={setManualPackage}
+                placeholder="com.example.app"
+                placeholderTextColor="#9ca3af"
+                autoCapitalize="none"
+                autoCorrect={false}
+                className="border border-border rounded-xl px-3 py-2.5 text-sm text-foreground bg-background"
+              />
+            </View>
+            <View className="gap-1.5">
+              <Text className="text-sm font-medium text-foreground">اسم التطبيق (اختياري)</Text>
+              <TextInput
+                value={manualName}
+                onChangeText={setManualName}
+                placeholder="اسم التطبيق للعرض"
+                placeholderTextColor="#9ca3af"
+                className="border border-border rounded-xl px-3 py-2.5 text-sm text-foreground bg-background"
+              />
+            </View>
+            <View className="gap-1.5">
+              <Text className="text-sm font-medium text-foreground">طريقة الدفع</Text>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerClassName="gap-2">
+                {PROVIDERS.map((p) => (
+                  <Pressable
+                    key={p.key}
+                    onPress={() => setManualProvider(p.key)}
+                    className={cn(
+                      'px-3 py-2 rounded-full border active:opacity-70',
+                      manualProvider === p.key ? 'bg-primary border-primary' : 'bg-card border-border'
+                    )}
+                  >
+                    <Text className={cn(
+                      'text-xs font-medium',
+                      manualProvider === p.key ? 'text-primary-foreground' : 'text-foreground'
+                    )}>
+                      {p.label}
+                    </Text>
+                  </Pressable>
+                ))}
+              </ScrollView>
+            </View>
+          </View>
+          <DialogFooter>
+            <Pressable
+              onPress={() => setManualAddOpen(false)}
+              className="px-4 py-2.5 rounded-xl border border-border active:opacity-70"
+            >
+              <Text className="text-sm font-medium text-foreground">إلغاء</Text>
+            </Pressable>
+            <Pressable
+              onPress={handleManualAdd}
+              disabled={!manualPackage.trim()}
+              className="px-4 py-2.5 rounded-xl bg-primary active:opacity-70 disabled:opacity-50"
+            >
+              <Text className="text-sm font-semibold text-primary-foreground">إضافة</Text>
+            </Pressable>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       {/* AlertDialog تأكيد إلغاء التوثيق */}
       <AlertDialog
         open={revokeTarget !== null}
@@ -453,7 +688,7 @@ export default function NotificationSourcesScreen() {
           <AlertDialogHeader>
             <AlertDialogTitle>إلغاء توثيق التطبيق</AlertDialogTitle>
             <AlertDialogDescription>
-              هل أنت متأكد من إلغاء توثيق {revokeTarget?.displayName ?? ''}؟{'\n'}
+              هل أنت متأكد من إلغاء توثيق {revokeTarget?.displayName ?? ''}?{'\n'}
               لن يُستقبَل منه أي إشعار دفع بعد الإلغاء.
             </AlertDialogDescription>
           </AlertDialogHeader>
