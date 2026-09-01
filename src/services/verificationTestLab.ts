@@ -259,7 +259,7 @@ export async function searchByTxIdInDevice(
   const enriched = await enrichTestLabResult(
     labResult,
     sourceIdentifier,
-    null,                        // currentMessageId غير متاح في TxId search
+    result.match.smsId,          // currentMessageId — من SMS Content Provider (يمنع اختيار نفس الرسالة)
     result.match.receivedAt      // messageReceivedAt من SMS Content Provider
   );
 
@@ -306,7 +306,7 @@ export async function searchByPhoneInDevice(
     const enriched = await enrichTestLabResult(
       labResult,
       sourceIdentifier,
-      null,          // currentMessageId غير متاح في Phone search
+      m.smsId,       // currentMessageId — من SMS Content Provider (يمنع اختيار نفس الرسالة)
       m.receivedAt   // messageReceivedAt من SMS Content Provider
     );
     labMatches.push(enriched);

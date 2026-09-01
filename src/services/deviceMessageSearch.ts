@@ -18,6 +18,8 @@ import { readMessagesFromSources, readExistingPaymentMessages } from './smsReade
 import type { SmsMessage } from '@/types/agent';
 
 export type DeviceMessageMatch = {
+  /** ID الرسالة من SMS Content Provider — يُستخدم كـ matchedSmsId في Balance Before */
+  smsId: string;
   /** الرسالة الأصلية كما وصلت بدون تعديل */
   originalBody: string;
   /** المُرسِل / المصدر */
@@ -142,6 +144,7 @@ export async function searchByTransactionId(
       found: true,
       status: 'EXACT_MATCH',
       match: {
+        smsId: msg.id,                          // ← ID الرسالة من Content Provider
         originalBody: msg.body,
         sender: msg.originatingAddress,
         receivedAt: msg.date,
@@ -192,6 +195,7 @@ export async function searchBySenderPhone(
     if (!phonesMatch(parsedPhone, phone)) continue;
 
     matches.push({
+      smsId: msg.id,
       originalBody: msg.body,
       sender: msg.originatingAddress,
       receivedAt: msg.date,
@@ -245,6 +249,7 @@ export async function searchDeviceMessages(
     if (!strength) continue;
 
     results.push({
+      smsId: msg.id,
       originalBody: msg.body,
       sender: msg.originatingAddress,
       receivedAt: msg.date,

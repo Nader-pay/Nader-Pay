@@ -4,7 +4,7 @@
  * يحسب Balance Before لعملية Vodafone Cash من الرسالة المالية
  * السابقة الأقرب زمنياً التي تحتوي على Evidence حقيقية للرصيد.
  *
- * القواعد الكاملة (per spec):
+ * القواعد الكاملة (Phase 6 — per spec):
  *  1. يبحث فقط داخل Trusted SMS Source (نفس المصدر).
  *  2. يستخدم فقط رسائل سابقة للعملية الحالية (ts < currentTs).
  *  3. يدعم 8+ صيغ رصيد من Vodafone Cash.
@@ -17,6 +17,10 @@
  * 10. يسجّل Diagnostics واضحة (لا يسجّل بيانات حساسة زائدة).
  * 11. يستخدم messageReceivedAt (وقت SMS Content Provider) كمرجع أساسي.
  * 12. يدعم رسائل Recharge + Outgoing + BalanceUpdate كـ Evidence.
+ * 13. [Phase 6] يعمل على Snapshot ثابت — لا يتأثر بـ SMS جديدة بعد تثبيت matchedSmsId.
+ * 14. [Phase 6] يُدرج Diagnostics كاملة: عدد مرشحين + أسباب رفض + selected evidence.
+ * 15. [Phase 6] يحتفظ بـ transactionDateTime منفصلاً عن messageReceivedAt.
+ *     أي تناقض بينهما يُسجَّل في Diagnostics ولا يُخفى.
  * ════════════════════════════════════════════════════════════════
  */
 
@@ -249,18 +253,26 @@ export async function findBalanceEvidence(
 
   return _doFindBalanceEvidence(
     sourceId, currentMessageId, currentTs,
-    balanceAfter, amount, maxMessages
+    balanceAfter, amount, maxMessages,
+    transactionOccurredAt
   );
 }
 
-/** دالة البحث الداخلية — تقبل timestamp رقمياً مباشرة */
+/** دالة البحث الداخلية — تقبل timestamp رقمياً مباشرة
+ *
+ * [Phase 6] هذه الدالة تعمل على Snapshot ثابت:
+ *  - currentTs = وقت matchedSmsReceivedAt (مُثبَّت قبل الاستدعاء)
+ *  - currentMessageId = matchedSmsId (لمنع اختيار الرسالة الحالية)
+ *  - لا تتأثر بـ SMS جديدة وصلت بعد تثبيت الـ Snapshot
+ */
 async function _doFindBalanceEvidence(
   sourceId: string,
   currentMessageId: string | null,
   currentTs: number,
   balanceAfter: number | null,
   amount: number | null,
-  maxMessages: number
+  maxMessages: number,
+  transactionOccurredAt?: string | null
 ): Promise<BalanceEvidence | null> {
   let messages: SmsMessage[];
   try {
@@ -275,14 +287,28 @@ async function _doFindBalanceEvidence(
     messages.length, sourceId, currentTs
   );
 
+  // ── [Phase 6] فحص تناقض Timestamps ─────────────────────────────────────
+  // transactionOccurredAt هو وقت العملية من نص الرسالة
+  // currentTs هو messageReceivedAt (مرجع أساسي)
+  // إذا كان transactionOccurredAt أحدث من messageReceivedAt بفارق > 60 ثانية → تناقض
+  if (transactionOccurredAt) {
+    const txTs = new Date(transactionOccurredAt).getTime();
+    if (!isNaN(txTs) && txTs > currentTs + 60_000) {
+      logWarn(
+        '[Phase 6] تناقض Timestamps: transactionOccurredAt=%s أحدث من messageReceivedAt=%d بـ%ds — نستخدم messageReceivedAt كمرجع',
+        transactionOccurredAt, currentTs, Math.round((txTs - currentTs) / 1000)
+      );
+    }
+  }
+
   // ── فلترة وجمع المرشحين ──────────────────────────────────────────────────
   const rejectedReasons: Array<{ id: string; reason: string }> = [];
   const candidates: Array<{ msg: SmsMessage; msgTs: number; evidence: { value: number; evidenceText: string } }> = [];
 
   for (const msg of messages) {
-    // ① منع الرسالة الحالية بـ ID
+    // ① منع الرسالة الحالية بـ ID (matchedSmsId)
     if (currentMessageId && msg.id === currentMessageId) {
-      rejectedReasons.push({ id: msg.id, reason: 'CURRENT_MESSAGE — الرسالة الحالية محظورة' });
+      rejectedReasons.push({ id: msg.id, reason: 'CURRENT_MESSAGE (matchedSmsId) — الرسالة المطابقة محظورة كـ Evidence' });
       continue;
     }
 
@@ -294,12 +320,12 @@ async function _doFindBalanceEvidence(
       continue;
     }
     if (msgTs >= currentTs) {
-      // ② ب: الرسالة التي لها نفس الـ timestamp والـ ID مختلف — قد تكون الرسالة الحالية
+      // ② ب: نفس الـ timestamp بدون ID — محتمل أن تكون الرسالة الحالية
       if (currentMessageId == null && msgTs === currentTs) {
-        rejectedReasons.push({ id: msg.id, reason: 'CURRENT_MESSAGE — نفس الـ timestamp بدون ID' });
+        rejectedReasons.push({ id: msg.id, reason: 'CURRENT_MESSAGE — نفس الـ timestamp (msgTs==currentTs) بدون ID' });
         continue;
       }
-      rejectedReasons.push({ id: msg.id, reason: `FUTURE_MESSAGE — ts=${msgTs} >= currentTs=${currentTs}` });
+      rejectedReasons.push({ id: msg.id, reason: `FUTURE_OR_SAME_TIME — ts=${msgTs} >= currentTs=${currentTs}` });
       continue;
     }
 
@@ -311,7 +337,7 @@ async function _doFindBalanceEvidence(
 
     // ④ Balance Evidence validation
     if (!isValidBalanceEvidenceMessage(msg.body)) {
-      rejectedReasons.push({ id: msg.id, reason: 'NO_BALANCE_EVIDENCE — لا تحتوي Balance صالح' });
+      rejectedReasons.push({ id: msg.id, reason: 'NO_BALANCE_EVIDENCE — لا تحتوي Balance صالح أو رسالة ترويجية' });
       continue;
     }
 
@@ -324,39 +350,46 @@ async function _doFindBalanceEvidence(
     candidates.push({ msg, msgTs, evidence });
   }
 
+  // ── [Phase 6] Diagnostics ─────────────────────────────────────────────────
   log(
-    'الفلترة: %d مرشح صالح من %d رسالة (%d مرفوضة)',
-    candidates.length, messages.length, rejectedReasons.length
+    '[Diagnostics] matchedSmsId=%s currentTs=%d totalMessages=%d candidates=%d rejected=%d',
+    currentMessageId ?? 'none', currentTs, messages.length, candidates.length, rejectedReasons.length
   );
+
+  if (__DEV__ && rejectedReasons.length > 0) {
+    const sample = rejectedReasons.slice(0, 10);
+    for (const r of sample) log('  مرفوض [%s]: %s', r.id, r.reason);
+    if (rejectedReasons.length > 10) log('  ... و%d أخرى مرفوضة', rejectedReasons.length - 10);
+  }
 
   if (candidates.length === 0) {
     log('لم يُعثر على رسالة سابقة تحتوي Balance Evidence — NO_PREVIOUS_BALANCE_EVIDENCE');
-    if (__DEV__) {
-      // عرض أسباب الرفض (بدون نصوص SMS الكاملة)
-      const sample = rejectedReasons.slice(0, 8);
-      for (const r of sample) log('  مرفوض [%s]: %s', r.id, r.reason);
-      if (rejectedReasons.length > 8) log('  ... و%d أخرى', rejectedReasons.length - 8);
-    }
     return null;
   }
 
-  // ── اختيار الأقرب زمنياً (الأحدث قبل العملية) ─────────────────────────────
-  // ترتيب تنازلي بـ msgTs → الأول هو الأقرب
+  // ── اختيار الأقرب زمنياً (الأحدث قبل matchedSmsReceivedAt) ──────────────
+  // ترتيب تنازلي بـ msgTs → الأول هو الأقرب لحظة العملية من الخلف
   candidates.sort((a, b) => b.msgTs - a.msgTs);
   const best = candidates[0];
   const distanceSeconds = Math.round((currentTs - best.msgTs) / 1000);
   const msgType = detectMessageType(best.msg.body);
 
   log(
-    'اختيار الرسالة: id=%s type=%s distance=%ds balance=%s',
-    best.msg.id, msgType, distanceSeconds, best.evidence.value
+    '[Diagnostics] Evidence مختارة: id=%s type=%s distance=%ds balance=%s (من %d مرشح)',
+    best.msg.id, msgType, distanceSeconds, best.evidence.value, candidates.length
   );
+
+  // [Phase 6] تحقق: sourceMessageId يجب أن يختلف عن matchedSmsId
+  if (currentMessageId && best.msg.id === currentMessageId) {
+    logWarn('[Phase 6] خطأ: Evidence المختارة لها نفس ID الرسالة الحالية — رفض');
+    return null;
+  }
 
   const flowValidation = validateBalanceFlow(best.evidence.value, amount, balanceAfter);
   log(
-    'Balance Flow: %s + %s = %s (expected %s) => %s',
+    '[Diagnostics] Balance Flow: %s + %s = %s (expected %s) => %s',
     best.evidence.value, amount ?? '?',
-    amount !== null ? best.evidence.value + amount : '?',
+    amount !== null ? (best.evidence.value + amount).toFixed(2) : '?',
     balanceAfter ?? '?',
     flowValidation
   );
@@ -370,7 +403,7 @@ async function _doFindBalanceEvidence(
     balanceEvidenceType: msgType,
     confidence: 'high',
     distanceSeconds,
-    reason: `أقرب رسالة ${msgType} سابقة تحتوي Balance Evidence (${distanceSeconds}s قبل العملية)`,
+    reason: `NEAREST_PREVIOUS_VALID_BALANCE — أقرب ${msgType} سابقة (${distanceSeconds}s قبل العملية)`,
     flowValidation,
     balanceAfter,
   };

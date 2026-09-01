@@ -521,6 +521,23 @@ function AnalysisResultCard({ result, compact }: { result: TestLabResult; compac
                 label="المسافة الزمنية"
                 value={formatDistance(result.balanceEvidence.distanceSeconds)}
               />
+              {/* [Phase 6] سبب الاختيار */}
+              <View className="flex-row items-start justify-between py-1">
+                <Text className="text-xs text-blue-700 flex-shrink-0 ml-2">سبب الاختيار</Text>
+                <Text className="text-xs text-blue-900 font-mono text-right flex-1">
+                  {result.balanceEvidence.reason}
+                </Text>
+              </View>
+            </View>
+          )}
+
+          {/* لا يوجد دليل */}
+          {result.valid && result.balanceBefore === null && result.balanceAfter !== null && (
+            <View className="mt-1 pt-1 border-t border-blue-200/60">
+              <View className="flex-row items-center justify-between">
+                <Text className="text-xs text-blue-700">سبب غياب الرصيد قبل العملية</Text>
+                <Text className="text-xs text-amber-700 font-semibold">NO_PREVIOUS_BALANCE_EVIDENCE</Text>
+              </View>
             </View>
           )}
         </View>
