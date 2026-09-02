@@ -114,15 +114,23 @@ export default function TestLabScreen() {
     try {
       const src = await getVerifiedSourceForProvider(provider);
       const raw = analyzeMessageForProvider(message.trim(), provider, src?.sourceId ?? null);
-      // نمرر null كـ messageReceivedAt حتى يستخدم enrichTestLabResult
-      // الـ occurredAt المستخرج من نص الرسالة كمرجع زمني صحيح.
-      // استخدام new Date() هنا خطأ جذري — يجعل النظام يبحث عن رسائل
-      // سابقة لـ "الآن" بدلاً من سابقة لوقت العملية الفعلي.
+
+      // ─── إصلاح جذري: وضع "رسالة" في Test Lab ─────────────────────────────
+      // المشكلة: كنا نمرر null → enrichTestLabResult يفالباك لـ occurredAt
+      //   المستخرج من نص الرسالة (مثلاً "2021-08-26"). رسائل الجهاز الفعلية
+      //   كلها أحدث (2026) فتُرفض جميعًا كـ REJECTED_FUTURE_RELATIVE_TO_TRANSACTION.
+      //
+      // الحل الصحيح: في وضع "رسالة يدوية"، المرجع الزمني هو "الآن"
+      //   لأن المستخدم يُدخل رسالة قديمة لاختبارها الآن — نريد رسائل
+      //   الجهاز السابقة لـ "الآن" (وليس سابقة لتاريخ 2021 في الرسالة).
+      //   هذا مختلف عن production حيث يكون المرجع هو matchedSmsReceivedAt الحقيقي.
+      const manualTestRefTime = new Date().toISOString();
+
       const enriched = await enrichTestLabResult(
         raw,
         src?.sourceId ?? null,
-        null,   // currentMessageId — غير متاح لرسالة يدوية
-        null    // messageReceivedAt — null → fallback لـ occurredAt من نص الرسالة
+        null,              // currentMessageId — غير متاح لرسالة يدوية
+        manualTestRefTime  // now() → يجد رسائل الجهاز الحقيقية كـ Evidence
       );
       setResult(enriched);
     } finally {
