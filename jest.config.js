@@ -4,6 +4,9 @@ export default {
   moduleNameMapper: {
     '^@/(.*)$': '<rootDir>/src/$1',
     '^react-native$': '<rootDir>/node_modules/react-native',
+    // ESM stubs — لا يعملان في بيئة Node/Jest
+    '^expo/fetch$': '<rootDir>/src/__mocks__/expo-fetch.js',
+    '^expo-constants$': '<rootDir>/src/__mocks__/expo-constants.js',
   },
   transform: {
     '^.+\\.[jt]sx?$': ['babel-jest', { configFile: './babel.config.js' }],
@@ -13,4 +16,6 @@ export default {
   ],
   testEnvironment: 'node',
   extensionsToTreatAsEsm: [],
+  // Mock global لـ remoteConfigService — يمنع ESM import errors في كل suite
+  setupFiles: ['<rootDir>/src/__mocks__/remoteConfigSetup.js'],
 };

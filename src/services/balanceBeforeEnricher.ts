@@ -29,6 +29,7 @@
 
 import type { SmsMessage } from '@/types/agent';
 import { readAllFromSource } from './smsReader';
+import { getRemoteConfigSync } from './remoteConfigService';
 
 // ─── نوع BalanceEvidence الكاملة ─────────────────────────────────────────────
 
@@ -188,26 +189,18 @@ export function extractBalanceFromMessage(body: string): number | null {
 
 /**
  * هل الرسالة من Vodafone Cash؟ (per spec §6 + §20)
- * تدعم جميع صيغ VF-Cash المعروفة:
- *  - رسائل بها "vodafone cash" أو "فودافون كاش"
- *  - رسائل الرصيد المستقلة (Spec Pattern A/B/C): رصيدك الحالي / رصيد حسابك / رصيد محفظتك
- *  - رسائل Recharge: "شحن" + "رصيد"
+ * يدعم الكلمات المفتاحية من Remote Config مع Fallback للقيم الصلبة.
  */
 function isVodafoneCashMessage(body: string): boolean {
   const lower = body.toLowerCase();
   const norm = normalizeArabic(body);
-  return (
-    lower.includes('vodafone cash') ||
-    lower.includes('vodafonecash') ||
-    norm.includes('فودافون كاش') ||
-    norm.includes('فودافون') ||
-    norm.includes('محفظتك') ||
-    // رسائل الرصيد المستقلة — Spec Pattern A/B/C
-    norm.includes('رصيدك الحالي') ||
-    norm.includes('رصيد حسابك') ||
-    norm.includes('رصيد محفظتك') ||
-    (norm.includes('شحن') && norm.includes('رصيد'))
-  );
+  // كلمات من Remote Config
+  const cfg = getRemoteConfigSync();
+  for (const kw of cfg.vf_cash_keywords) {
+    if (lower.includes(kw.toLowerCase()) || norm.includes(kw)) return true;
+  }
+  // fallback صلب: رسائل Recharge التي تجمع شحن + رصيد
+  return norm.includes('شحن') && norm.includes('رصيد');
 }
 
 /** تحديد نوع رسالة VF للـ metadata */
@@ -230,21 +223,18 @@ function isValidBalanceEvidenceMessage(body: string): boolean {
   if (!extractBalanceEvidence(body)) return false;
   const lower = body.toLowerCase();
   const norm = normalizeArabic(body);
-  // ─── كشف الرسائل الترويجية فقط — لا نرفض رسائل الشحن الحقيقية ───────────
-  // رسائل 'تم شحن ... وخصم X من محفظتك' ليست ترويجية — الخصم هنا اسم عملية مالية
-  // نرفض فقط: خصم% (نسبة مئوية) أو "عرض خصم" أو "استمتع بخصم"
-  const isPromoDiscount =
-    /خصم\s*\d+\s*%/.test(norm) ||         // خصم 20% — ترويجي
-    /عرض\s+خصم/.test(norm) ||             // عرض خصم — ترويجي
-    /استمتع\s+بخصم/.test(norm) ||         // استمتع بخصم — ترويجي
-    /احصل\s+على\s+خصم/.test(norm);        // احصل على خصم — ترويجي
-  const isPromo =
-    isPromoDiscount ||
-    lower.includes('عرض') ||
-    lower.includes('congratulation') ||
-    (norm.includes('استمتع') && !norm.includes('رصيد')) ||
-    (norm.includes('احصل') && !norm.includes('رصيد'));
-  return !isPromo;
+  // ─── كشف الرسائل الترويجية — من Remote Config أو fallback ───────────────
+  const cfg = getRemoteConfigSync();
+  const promoPatterns = cfg.balance_promo_reject_patterns;
+  const isPromoFromConfig = promoPatterns.some((pat) => {
+    try { return new RegExp(pat).test(norm) || new RegExp(pat).test(lower); }
+    catch { return norm.includes(pat) || lower.includes(pat); }
+  });
+  if (isPromoFromConfig) return false;
+  // حماية إضافية صلبة لرسائل لا تحتوي رصيداً
+  if ((norm.includes('استمتع') && !norm.includes('رصيد')) ||
+      (norm.includes('احصل') && !norm.includes('رصيد'))) return false;
+  return true;
 }
 
 // ─── Balance Flow Validation ──────────────────────────────────────────────────
@@ -255,8 +245,9 @@ export function validateBalanceFlow(
   balanceAfter: number | null
 ): BalanceFlowValidation {
   if (amount === null || balanceAfter === null) return 'BALANCE_FLOW_UNKNOWN';
-  // tolerance = 1.0 EGP لتغطية رسوم / ضرائب صغيرة (per spec §11)
-  return Math.abs(balanceBefore + amount - balanceAfter) <= 1.0
+  // tolerance من Remote Config — fallback 1.0 EGP (per spec §11)
+  const tolerance = getRemoteConfigSync().balance_tolerance_egp;
+  return Math.abs(balanceBefore + amount - balanceAfter) <= tolerance
     ? 'BALANCE_FLOW_VALID'
     : 'BALANCE_FLOW_MISMATCH';
 }

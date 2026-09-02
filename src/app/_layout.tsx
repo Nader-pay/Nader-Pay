@@ -2,12 +2,13 @@ import * as Sentry from '@sentry/react-native';
 import { Stack } from 'expo-router';
 import { PortalHost } from '@rn-primitives/portal';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
-import { ActivityIndicator, View } from 'react-native';
-import { useEffect } from 'react';
+import { ActivityIndicator, View, Text } from 'react-native';
+import { useEffect, useState } from 'react';
 
 import { SessionProvider, useSession } from '@/ctx';
 import { AgentProvider } from '@/contexts/AgentContext';
 import { runCleanMigration, shouldRunMigration } from '@/services/versionCheck';
+import { getRemoteConfig, type RemoteConfig } from '@/services/remoteConfigService';
 import "../global.css";
 
 Sentry.init({
