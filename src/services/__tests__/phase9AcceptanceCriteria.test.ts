@@ -233,6 +233,49 @@ describe('TC_PATTERN — صيغ الرصيد الحقيقية من Vodafone Cash
       expect(ev!.value).toBeGreaterThan(0);
     }
   });
+
+  // ── Test K — رسالة شحن حقيقية تحتوي "خصم" — يجب القبول لا الرفض ───────────
+
+  it('TC_PATTERN_K — رسالة شحن "تم شحن ... وخصم X من محفظتك" → مقبولة كـ Evidence', () => {
+    // هذه الحالة الحقيقية من الصورة — كانت مرفوضة خطأً بسبب lower.includes('خصم')
+    const body =
+      'تم شحن رصيد موبايلك ب 13.5 بنجاح وخصم 13.5 من محفظتك شاملة الضريبة؛ رصيد حسابك في فودافون كاش الحالي 83924.6. تابع كل مصروفاتك من تاريخ المعاملات على أبلكيشن أنا فودافون http://vf.eg/vfcash';
+    expect(isVodafoneCashMessage(body)).toBe(true);
+    expect(isValidBalanceEvidenceMessage(body)).toBe(true); // يجب القبول
+    const ev = extractBalanceEvidence(body);
+    expect(ev).not.toBeNull();
+    expect(ev!.value).toBeCloseTo(83924.6, 1);
+    expect(detectMessageType(body)).toBe('recharge');
+  });
+
+  it('TC_PATTERN_K2 — رسالة تحتوي "خصم 20%" (ترويجية) → مرفوضة', () => {
+    const body = 'احصل على خصم 20% على باقاتك من خلال فودافون كاش 83924.6';
+    // هذه ترويجية حقيقية — يجب رفضها
+    expect(isValidBalanceEvidenceMessage(body)).toBe(false);
+  });
+
+  it('TC_PATTERN_K3 — رسالة "تم تحويل" → outgoing_payment (لا other_financial)', () => {
+    // من الصورة 3: تم تحويل 365 جنيه لرقم ... رصيد حسابك في فودافون كاش الحالي 84007.90
+    const body =
+      'تم تحويل 365 جنيه لرقم 01014201608 مصاريف الخدمة 1 جنيه رصيد حسابك في فودافون كاش الحالي 84007.90. تاريخ العملية 16:57 : 01-09-26 رقم العملية 023260204796';
+    expect(detectMessageType(body)).toBe('outgoing_payment');
+    expect(isValidBalanceEvidenceMessage(body)).toBe(true);
+    const ev = extractBalanceEvidence(body);
+    expect(ev).not.toBeNull();
+    expect(ev!.value).toBeCloseTo(84007.90, 2);
+  });
+
+  it('TC_PATTERN_K4 — رسالة "رصيد محفظتك الحالي" (صورة 4 Delta Misr) → مقبولة', () => {
+    // من الصورة 4: تم دفع مبلغ 7.5 جنية ل Delta Misr رصيد محفظتك الحالي 84317.1 جنيه
+    const body =
+      'تم دفع مبلغ 7.5 جنية ل Delta Misr رصيد محفظتك الحالي 84317.1 جنيه. رقم العملية 022899429376 تاريخ العملية 21-08-26';
+    expect(isVodafoneCashMessage(body)).toBe(true);
+    expect(isValidBalanceEvidenceMessage(body)).toBe(true);
+    const ev = extractBalanceEvidence(body);
+    expect(ev).not.toBeNull();
+    expect(ev!.value).toBeCloseTo(84317.1, 1);
+    expect(detectMessageType(body)).toBe('outgoing_payment'); // يحتوي "دفع"
+  });
 });
 
 // ══════════════════════════════════════════════════════════════════════════════

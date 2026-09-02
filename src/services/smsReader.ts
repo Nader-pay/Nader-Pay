@@ -143,7 +143,7 @@ export async function readMessagesFromSourcesFiltered(sourceIds: string[], maxCo
  * تُستخدم لـ Balance Before Enrichment — لأن رسائل Recharge/BalanceUpdate
  * قد لا تُعرَّف كـ Provider معروف لكنها تحتوي Balance Evidence.
  */
-export async function readAllFromSource(sourceId: string, maxCount = 300): Promise<SmsMessage[]> {
+export async function readAllFromSource(sourceId: string, maxCount = 1000): Promise<SmsMessage[]> {
   if (!IS_ANDROID) return [];
   const all = await readAllInboxMessages(maxCount);
   const normId = normalizeSender(sourceId);

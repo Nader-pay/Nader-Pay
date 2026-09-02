@@ -214,7 +214,11 @@ function isVodafoneCashMessage(body: string): boolean {
 function detectMessageType(body: string): BalanceEvidenceType {
   const norm = normalizeArabic(body).toLowerCase();
   if (norm.includes('تم استلام') || norm.includes('received')) return 'incoming_payment';
-  if (norm.includes('تم ارسال') || norm.includes('تم إرسال') || norm.includes('دفع')) return 'outgoing_payment';
+  if (
+    norm.includes('تم ارسال') || norm.includes('تم إرسال') ||
+    norm.includes('تم تحويل') || norm.includes('تحويل') ||
+    norm.includes('دفع') || norm.includes('تم الدفع')
+  ) return 'outgoing_payment';
   if (norm.includes('شحن') || norm.includes('recharge')) return 'recharge';
   if (norm.includes('رصيد حسابك') || norm.includes('رصيدك الحالي')) return 'balance_update';
   return 'other_financial';
@@ -226,9 +230,17 @@ function isValidBalanceEvidenceMessage(body: string): boolean {
   if (!extractBalanceEvidence(body)) return false;
   const lower = body.toLowerCase();
   const norm = normalizeArabic(body);
+  // ─── كشف الرسائل الترويجية فقط — لا نرفض رسائل الشحن الحقيقية ───────────
+  // رسائل 'تم شحن ... وخصم X من محفظتك' ليست ترويجية — الخصم هنا اسم عملية مالية
+  // نرفض فقط: خصم% (نسبة مئوية) أو "عرض خصم" أو "استمتع بخصم"
+  const isPromoDiscount =
+    /خصم\s*\d+\s*%/.test(norm) ||         // خصم 20% — ترويجي
+    /عرض\s+خصم/.test(norm) ||             // عرض خصم — ترويجي
+    /استمتع\s+بخصم/.test(norm) ||         // استمتع بخصم — ترويجي
+    /احصل\s+على\s+خصم/.test(norm);        // احصل على خصم — ترويجي
   const isPromo =
+    isPromoDiscount ||
     lower.includes('عرض') ||
-    lower.includes('خصم') ||
     lower.includes('congratulation') ||
     (norm.includes('استمتع') && !norm.includes('رصيد')) ||
     (norm.includes('احصل') && !norm.includes('رصيد'));
