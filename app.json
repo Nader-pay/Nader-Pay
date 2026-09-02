@@ -3,7 +3,7 @@
     "name": "Nader Pay Agent",
     "slug": "nader-pay-agent",
     "scheme": "appdz8miw66l2wx",
-    "version": "1.0.180",
+    "version": "1.0.181",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
@@ -18,7 +18,7 @@
         "backgroundColor": "#ffffff"
       },
       "predictiveBackGestureEnabled": false,
-      "versionCode": 82,
+      "versionCode": 83,
       "package": "com.miaoda.appdz8miw66l2wx",
       "permissions": [
         "android.permission.INTERNET",

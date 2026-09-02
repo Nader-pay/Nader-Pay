@@ -13,6 +13,7 @@ import { StatusBar } from 'expo-status-bar';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   ArrowLeft,
+  AlertCircle,
   CheckCircle2,
   ChevronDown,
   ChevronUp,
@@ -502,48 +503,74 @@ function AnalysisResultCard({ result, compact }: { result: TestLabResult; compac
           {result.balanceEvidence && (
             <View className="mt-2 pt-2 border-t border-blue-200/60 gap-1.5">
               <Text className="text-xs font-semibold text-blue-800">دليل الرصيد السابق</Text>
+              {/* نص مقتطف الرصيد */}
               <View className="p-2.5 rounded-lg bg-white/70 border border-blue-200">
                 <Text className="text-xs text-blue-900 leading-5 italic">
                   {`"${result.balanceEvidence.balanceEvidenceText}"`}
                 </Text>
               </View>
-              {/* [spec §10] sourceMessageId */}
-              <Row label="ID رسالة الدليل" value={result.balanceEvidence.sourceMessageId} mono />
-              <Row label="وقت الرسالة الدليل" value={formatDate(result.balanceEvidence.sourceMessageReceivedAt)} />
-              <Row label="المرسِل" value={result.balanceEvidence.sourceSender} mono />
+              <Row label="وقت الرسالة" value={formatDate(result.balanceEvidence.sourceMessageReceivedAt)} />
+              <Row label="المُرسِل" value={result.balanceEvidence.sourceSender} mono />
               <Row
                 label="نوع الرسالة"
                 value={
                   result.balanceEvidence.balanceEvidenceType === 'incoming_payment' ? 'استلام أموال' :
                   result.balanceEvidence.balanceEvidenceType === 'outgoing_payment' ? 'إرسال أموال' :
                   result.balanceEvidence.balanceEvidenceType === 'recharge' ? 'شحن رصيد' :
-                  result.balanceEvidence.balanceEvidenceType === 'balance_update' ? 'تحديث رصيد' :
+                  result.balanceEvidence.balanceEvidenceType === 'balance_update' ? 'تحديث رصيد (BALANCE_UPDATE)' :
                   'رسالة مالية'
                 }
               />
+              {/* سبب الاختيار بنص عربي احترافي */}
+              <View className="flex-row items-start justify-between py-1 border-b border-blue-200/60">
+                <Text className="text-xs text-blue-700 flex-shrink-0 ml-2">سبب الاختيار</Text>
+                <Text className="text-xs text-blue-900 text-right flex-1 leading-4 font-medium">
+                  {`أقرب رسالة صالحة قبل العملية (${formatDistance(result.balanceEvidence.distanceSeconds)} فارق زمني)`}
+                </Text>
+              </View>
               {/* [spec §4] distance = transactionReceivedAt - evidenceReceivedAt */}
               <Row
                 label="المسافة الزمنية"
                 value={formatDistance(result.balanceEvidence.distanceSeconds)}
               />
+              {/* ID رسالة الدليل — للتحقق التقني */}
+              <Row label="ID رسالة الدليل" value={result.balanceEvidence.sourceMessageId} mono />
 
               {/* [spec §11] Debug Panel — قابل للطي، يفصل Internal Codes */}
               <DebugPanel evidence={result.balanceEvidence} diagnosticInfo={result.diagnosticInfo} />
             </View>
           )}
 
-          {/* لا يوجد دليل — رسالة احترافية بدلاً من الكود الداخلي */}
+          {/* لا يوجد دليل سابق — قسم مستقل احترافي */}
           {result.valid && result.balanceBefore === null && result.balanceAfter !== null && (
-            <View className="mt-1 pt-2 border-t border-blue-200/60 gap-1">
-              <Text className="text-xs text-blue-700 font-semibold">الرصيد قبل العملية</Text>
-              <Text className="text-xs text-amber-700 leading-4">
-                {result.noEvidenceReason ?? 'لم يُعثر على دليل رصيد سابق موثوق'}
-              </Text>
-              {/* diagnosticInfo مُختصرة */}
-              {result.diagnosticInfo && (
-                <Text className="text-xs text-muted-foreground font-mono mt-0.5">
-                  {`قُرئت ${result.diagnosticInfo.totalMessagesRead} رسالة · ${result.diagnosticInfo.messagesBeforeTransaction} سابقة · ${result.diagnosticInfo.rejectedCount} مرفوضة`}
+            <View className="mt-2 pt-2 border-t border-blue-200/60 gap-1.5">
+              <View className="flex-row items-center gap-1.5">
+                <AlertCircle size={13} color="#b45309" />
+                <Text className="text-xs font-semibold text-amber-700">الرصيد قبل العملية</Text>
+              </View>
+              {/* السبب العربي الاحترافي */}
+              <View className="px-3 py-2 rounded-lg bg-amber-50 border border-amber-200">
+                <Text className="text-xs text-amber-800 leading-5">
+                  {result.noEvidenceReason ?? 'لم يُعثر على رسالة سابقة تحتوي رصيداً صالحاً للتحقق'}
                 </Text>
+              </View>
+              {/* إحصائيات البحث التشخيصية */}
+              {result.diagnosticInfo && (
+                <View className="gap-1 mt-0.5">
+                  <Row
+                    label="رسائل قُرئت"
+                    value={String(result.diagnosticInfo.totalMessagesRead)}
+                  />
+                  <Row
+                    label="سابقة للعملية"
+                    value={String(result.diagnosticInfo.messagesBeforeTransaction)}
+                  />
+                  <Row
+                    label="مرفوضة"
+                    value={String(result.diagnosticInfo.rejectedCount)}
+                  />
+                  {/* أسباب الرفض تأتي من evidence.rejectedCandidates (BalanceEvidence) لا من diagnosticInfo */}
+                </View>
               )}
             </View>
           )}

@@ -36,19 +36,24 @@ export function normalizeText(text: string): string {
 
 // ─── صيغ الرصيد المدعومة ────────────────────────────────────────────────────
 //
-// يدعم (per spec):
-//   1. رصيدك الحالي
-//   2. رصيد حسابك
-//   3. رصيد حسابك في فودافون كاش الحالي
-//   4. رصيد محفظتك الحالي
-//   5. رصيد محفظتك
-//   6. رصيد حسابك الحالي
-//   7. الرصيد الحالي
-//   8. رصيدك
-//   + دعم الفاصلة المنقوطة "؛" وغياب الفاصل بعد الـ label
+// يدعم (per spec §2 + حالات حقيقية من رسائل VF-Cash):
+//   A. رصيدك الحالي 83924.6
+//   B. رصيد حسابك الحالي في فودافون كاش 84007.90   ← الصيغة التي كانت تفشل
+//   C. رصيد محفظتك الحالي 84317.1 جنيه
+//   D. رصيد حسابك في فودافون كاش الحالي 84007.90
+//   E. رصيد حسابك الحالي (بدون "في ...")
+//   F. الرصيد الحالي
+//   G. رصيدك
+//   H. رصيد حسابك (بدون "الحالي")
+//   I. رصيد محفظتك (بدون "الحالي")
+//   + دعم الفاصلة المنقوطة "؛"، ":" ، مسافة، أو مباشرةً بعد الـ label
+//
+// التصحيح الأساسي (B):
+//   "رصيد حسابك الحالي في فودافون كاش ..." — كلمة "الحالي" تأتي قبل "في"
+//   الـ Regex القديم توقعها بعد "فودافون كاش" → فشل. الحل: فرع مستقل.
 
 export const BALANCE_LABEL_PATTERN =
-  /(?:رصيدك\s+الحالي|رصيد\s+حسابك(?:\s+في\s+(?:فودافون\s+)?(?:كاش|فودافون\s+كاش))?\s*(?:الحالي)?|رصيد\s+محفظتك\s*(?:الحالي)?|رصيد\s+حسابك\s+الحالي|الرصيد\s+الحالي|رصيدك)\s*[:\s؛]\s*([\d,]+(?:\.\d+)?)/i;
+  /(?:رصيدك\s+الحالي|رصيد\s+حسابك\s+الحالي(?:\s+(?:في|بـ)\s+(?:[^\d\s]+(?:\s+[^\d\s]+){0,4}))?\s*|رصيد\s+حسابك(?:\s+في\s+(?:[^\d\s]+(?:\s+[^\d\s]+){0,4}))?\s*(?:الحالي\s*)?|رصيد\s+محفظتك\s*(?:الحالي\s*)?|الرصيد\s+الحالي|رصيدك\s*)\s*[:\s؛]?\s*([\d,]+(?:\.\d+)?)/i;
 
 /**
  * استخرج قيمة الرصيد وعبارة الدليل من نص رسالة.
@@ -87,7 +92,8 @@ export function validateBalanceFlow(
   balanceAfter: number | null
 ): BalanceFlowValidation {
   if (amount === null || balanceAfter === null) return 'BALANCE_FLOW_UNKNOWN';
-  const tolerance = 0.1;
+  // tolerance = 1.0 EGP لتغطية رسوم / ضرائب صغيرة (per spec §11)
+  const tolerance = 1.0;
   return Math.abs(balanceBefore + amount - balanceAfter) <= tolerance
     ? 'BALANCE_FLOW_VALID'
     : 'BALANCE_FLOW_MISMATCH';
@@ -113,7 +119,10 @@ export function detectMessageType(body: string): BalanceEvidenceType {
 
 /**
  * هل الرسالة من Vodafone Cash؟
- * لا نشترط "محفظتك" — رسائل Recharge لا تحتوي عليها.
+ * تدعم جميع صيغ VF-Cash المعروفة (per spec §6 + §20):
+ *  - رسائل بها "vodafone cash" أو "فودافون كاش"
+ *  - رسائل الرصيد المستقلة: "رصيدك الحالي" / "رصيد حسابك" / "رصيد محفظتك"
+ *  - رسائل Recharge: "شحن" + "رصيد"
  */
 export function isVodafoneCashMessage(body: string): boolean {
   const lower = body.toLowerCase();
@@ -124,8 +133,11 @@ export function isVodafoneCashMessage(body: string): boolean {
     norm.includes('فودافون كاش') ||
     norm.includes('فودافون') ||
     norm.includes('محفظتك') ||
-    (norm.includes('شحن') && norm.includes('رصيد')) ||
-    (norm.includes('رصيد حسابك') && norm.includes('فودافون'))
+    // رسائل الرصيد المستقلة (Spec Pattern A/B/C): رصيدك الحالي / رصيد حسابك / رصيد محفظتك
+    norm.includes('رصيدك الحالي') ||
+    norm.includes('رصيد حسابك') ||
+    norm.includes('رصيد محفظتك') ||
+    (norm.includes('شحن') && norm.includes('رصيد'))
   );
 }
 
