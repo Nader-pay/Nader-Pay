@@ -90,7 +90,18 @@ function serializeCustomHeaders(headers?: Record<string, string>): string | null
 function parseApiContract(raw: string | null): BackendApiContract | undefined {
   if (!raw) return undefined;
   try {
-    return JSON.parse(raw) as BackendApiContract;
+    const contract = JSON.parse(raw) as BackendApiContract;
+    // ── Migration guard: عقود قديمة كانت تستخدم '/orders' الخطأ ──────────
+    // نُعيدها إلى undefined حتى يُعيد discoverContract بناءها بالشكل الصحيح
+    const ordersEndpoint = contract?.endpoints?.orders;
+    if (
+      ordersEndpoint === '/orders' ||
+      ordersEndpoint === 'orders' ||
+      (typeof ordersEndpoint === 'string' && ordersEndpoint.endsWith('/orders'))
+    ) {
+      return undefined;
+    }
+    return contract;
   } catch {
     return undefined;
   }

@@ -146,15 +146,18 @@ async function subscribeToRealtime() {
 
   setStatus('disconnected'); // حالة انتقالية قبل SUBSCRIBED
 
+  // جلب account_id من الـ profile (الجدول الحقيقي هو payment_requests وليس orders)
+  const accountId = profile?.id ?? '';
+
   currentChannel = supabase
-    .channel('agent-orders')
+    .channel(`agent-payment-requests-${deviceId}`)
     .on(
       'postgres_changes',
       {
         event: '*',
         schema: 'public',
-        table: 'orders',
-        filter: `device_id=eq.${deviceId}`,
+        table: 'payment_requests',
+        // لا نُضيف filter هنا — RLS تضمن أن المستخدم يرى فقط سجلاته
       },
       async () => {
         if (isStopped) return;

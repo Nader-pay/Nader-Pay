@@ -1346,13 +1346,20 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
     const subscription = Notifications.addNotificationReceivedListener(async (notification) => {
       if (!settings.enabled) return;
 
+      // استخراج packageName من trigger — Android يضعه في عدة حقول حسب الإصدار
+      const trigger = notification.request.trigger as Record<string, unknown> | null;
       const packageId: string =
-        (notification.request.trigger as Record<string, unknown>)?.packageName as string
+        (trigger?.senderPackageName as string)
+        ?? (trigger?.packageName as string)
+        ?? (trigger?.applicationId as string)
+        ?? (notification.request.content.data?.packageName as string)
+        ?? (notification.request.content.data?.senderPackageName as string)
         ?? '';
       const title  = notification.request.content.title  ?? '';
       const body   = notification.request.content.body   ?? '';
 
-      if (!packageId && !body) return;
+      // لا نعالج إشعاراً بدون محتوى نصي على الإطلاق
+      if (!body && !title) return;
 
       const pending = pendingOrdersRef.current.filter((o) =>
         ['new', 'scanning', 'matched', 'review_required'].includes(o.localStatus ?? 'new')
