@@ -41,27 +41,41 @@ function toEnDigits(text: string): string {
 }
 
 /**
- * تحليل تاريخ Vodafone Cash — يدعم الصيغتين:
- *   YY-MM-DD HH:MM  (مثال: 21-08-26 00:15)  ← الشائع في الرسائل الحقيقية
- *   HH:MM DD/MM/YY  (مثال: 00:15 26/08/21)  ← صيغة قديمة
- *   DD/MM/YYYY HH:MM                         ← نمط بديل
+ * تحليل تاريخ Vodafone Cash — يدعم الصيغ التالية:
+ *
+ *   DD-MM-YY HH:MM   (مثال: "21-08-26 00:15" → 21 أغسطس 2026 الساعة 00:15)
+ *                    ← الصيغة الشائعة في رسائل VF-Cash الحقيقية
+ *                    ← الترتيب: DD=21, MM=08, YY=26 (ليس YY-MM-DD!)
+ *
+ *   HH:MM DD/MM/YY   (مثال: "00:15 26/08/21" → 26 أغسطس 2021)
+ *                    ← صيغة قديمة (الساعة أولاً)
+ *
+ *   DD/MM/YYYY HH:MM (مثال: "26/08/2026 00:15")
+ *   YYYY-MM-DD HH:MM (مثال: "2026-08-21 00:15")
+ *                    ← صيغ بديلة بسنة رباعية
+ *
+ * ⚠️  تحذير مهم — سبب الخطأ السابق:
+ *   "21-08-26 00:15" كان يُفسَّر خطأً كـ YY-MM-DD (2021-08-26).
+ *   الصحيح هو DD-MM-YY (2026-08-21). الرقمان الأولان هو اليوم دائماً.
+ *
  * يستخدم Date.UTC لتجنب مشاكل timezone.
  */
 function parseOccurredAt(dateText: string | null): string | null {
   if (!dateText) return null;
   const norm = toEnDigits(dateText.trim());
 
-  // ── النمط الأحدث: YY-MM-DD HH:MM ─────────────────────────────────────────
-  // مثال: "21-08-26 00:15" → year=2021, month=08, day=26
-  const newFmt = norm.match(/^(\d{2})[\-\/](\d{2})[\-\/](\d{2})\s+(\d{2}):(\d{2})/);
-  if (newFmt) {
-    const [, yy, mm, dd, hh, min] = newFmt;
+  // ── الصيغة الشائعة: DD-MM-YY HH:MM ──────────────────────────────────────
+  // مثال: "21-08-26 00:15" → DD=21, MM=08, YY=26 → 2026-08-21T00:15:00Z
+  // ⚠️ الترتيب DD-MM-YY وليس YY-MM-DD
+  const shortFmt = norm.match(/^(\d{2})[\-\/](\d{2})[\-\/](\d{2})\s+(\d{2}):(\d{2})/);
+  if (shortFmt) {
+    const [, dd, mm, yy, hh, min] = shortFmt;
     const fullYear = 2000 + parseInt(yy, 10);
     const ts = Date.UTC(fullYear, parseInt(mm, 10) - 1, parseInt(dd, 10), parseInt(hh, 10), parseInt(min, 10));
     if (!isNaN(ts)) return new Date(ts).toISOString();
   }
 
-  // ── نمط DD/MM/YYYY HH:MM أو YYYY-MM-DD HH:MM ────────────────────────────
+  // ── صيغة بسنة رباعية: DD/MM/YYYY HH:MM أو YYYY-MM-DD HH:MM ─────────────
   const fullDate = norm.match(/(\d{1,2})[\-\/](\d{1,2})[\-\/](\d{4})\s+(\d{2}):(\d{2})/);
   if (fullDate) {
     const [, d, m, y, h, min] = fullDate;
@@ -69,7 +83,8 @@ function parseOccurredAt(dateText: string | null): string | null {
     if (!isNaN(ts)) return new Date(ts).toISOString();
   }
 
-  // ── النمط القديم: HH:MM DD/MM/YY ────────────────────────────────────────
+  // ── الصيغة القديمة: HH:MM DD/MM/YY (الساعة أولاً) ───────────────────────
+  // مثال: "00:15 26/08/21" → 2021-08-26T00:15:00Z
   const oldFmt = norm.match(/(\d{1,2}):(\d{2})(?::(\d{2}))?\s+(\d{1,2})[\/-](\d{1,2})[\/-](\d{2,4})/);
   if (oldFmt) {
     const [, hours, minutes, , day, month, year] = oldFmt;

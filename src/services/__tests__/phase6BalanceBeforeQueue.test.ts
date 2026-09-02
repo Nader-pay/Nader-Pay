@@ -239,7 +239,6 @@ describe('TC12 — أرقام عربية مدعومة', () => {
     expect(ev!.value).toBe(83924);
   });
 });
-
 // ─── TC13 ─────────────────────────────────────────────────────────────────────
 describe('TC13 — أرقام إنجليزية ومسافات متباينة', () => {
   it('مسافات قبل وبعد الفاصل مقبولة', () => {
@@ -582,5 +581,64 @@ describe('Integration — PaymentRequest → Queue → Snapshot → Context', ()
     // Amount ≠ TransactionID ≠ BalanceAfter (كل قيمة مختلفة)
     expect(String(frozen.matchedAmount)).not.toBe(frozen.matchedTransactionId);
     expect(frozen.matchedAmount).not.toBe(frozen.matchedBalanceAfter);
+  });
+});
+
+// ─── TC_DATE — إصلاح parseOccurredAt: DD-MM-YY وليس YY-MM-DD ────────────────
+// هذه الاختبارات تتحقق من الإصلاح الجذري لمشكلة تفسير تاريخ Vodafone Cash
+// المشكلة: "21-08-26 00:15" كان يُفسَّر كـ 2021-08-26 (YY-MM-DD)
+// الصحيح: "21-08-26 00:15" = DD=21, MM=08, YY=26 → 2026-08-21 (DD-MM-YY)
+
+jest.mock('@/services/providers/vodafoneCash', () => {
+  // نستورد الوحدة الحقيقية بدون mock عشان نختبر parseOccurredAt الفعلية
+  const actual = jest.requireActual('@/services/providers/vodafoneCash');
+  return actual;
+});
+
+// نستورد بعد تعريف mock
+import { parseVodafoneCashSms } from '../providers/vodafoneCash';
+
+describe('TC_DATE — parseOccurredAt: DD-MM-YY الإصلاح الجذري', () => {
+  const MSG_NEW_FMT = (date: string) =>
+    `تم استلام مبلغ 400 جنيه من رقم 01030951228 المسجل بإسم Wessam على رقم محفظتك 01097273680. رصيدك الحالي: 84324.60 جنيه تاريخ العملية: ${date} رقم العملية: 022896233255`;
+
+  it('21-08-26 00:15 → 2026-08-21 (DD=21, MM=08, YY=26)', () => {
+    const result = parseVodafoneCashSms(MSG_NEW_FMT('21-08-26 00:15'));
+    expect(result).not.toBeNull();
+    // يجب أن يكون 2026-08-21 وليس 2021-08-26
+    expect(result!.occurredAt).toBe('2026-08-21T00:15:00.000Z');
+  });
+
+  it('15-07-25 14:30 → 2025-07-15 وليس 2015-07-25', () => {
+    const result = parseVodafoneCashSms(MSG_NEW_FMT('15-07-25 14:30'));
+    expect(result).not.toBeNull();
+    expect(result!.occurredAt).toBe('2025-07-15T14:30:00.000Z');
+  });
+
+  it('01-08-26 09:00 → 2026-08-01', () => {
+    const result = parseVodafoneCashSms(MSG_NEW_FMT('01-08-26 09:00'));
+    expect(result).not.toBeNull();
+    expect(result!.occurredAt).toBe('2026-08-01T09:00:00.000Z');
+  });
+
+  it('الصيغة القديمة: 00:15 26-08-21 → 2021-08-26 (لم تتأثر)', () => {
+    // الصيغة القديمة: الساعة أولاً ثم اليوم/الشهر/السنة — نص كامل
+    const MSG_OLD = `تم استلام مبلغ 400 جنيه من رقم 01030951228 المسجل بإسم Wessam على رقم محفظتك 01097273680. رصيدك الحالي: 84324.60 جنيه تاريخ العملية: 00:15 26-08-21 رقم العملية: 022896233255`;
+    const result = parseVodafoneCashSms(MSG_OLD);
+    expect(result).not.toBeNull();
+    expect(result!.occurredAt).toBe('2021-08-26T00:15:00.000Z');
+  });
+
+  it('occurredAt يكون مرجعاً زمنياً أقدم من msg.date للرسالة المطابقة', () => {
+    // الحالة الفعلية: رسالة 21/08/2026 00:15 في SMS Provider
+    // occurredAt يجب أن يكون 2026-08-21 — أقدم من رسالة 01/09/2026
+    const result = parseVodafoneCashSms(MSG_NEW_FMT('21-08-26 00:15'));
+    expect(result).not.toBeNull();
+    const occurredTs  = new Date(result!.occurredAt).getTime();
+    const recentSmsTs = new Date('2026-09-01T16:57:00.000Z').getTime();
+    // رسالة الشحن 20/08 يجب أن تكون قبل occurredAt 21/08
+    const prevMsgTs   = new Date('2026-08-20T01:57:00.000Z').getTime();
+    expect(prevMsgTs).toBeLessThan(occurredTs);     // الرسالة السابقة أقدم ✅
+    expect(recentSmsTs).toBeGreaterThan(occurredTs); // الرسالة الجديدة أحدث ✅
   });
 });
