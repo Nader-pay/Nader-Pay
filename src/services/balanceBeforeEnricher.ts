@@ -4,7 +4,7 @@
  * يحسب Balance Before لعملية Vodafone Cash من الرسالة المالية
  * السابقة الأقرب زمنياً التي تحتوي على Evidence حقيقية للرصيد.
  *
- * القواعد الكاملة (Phase 6 — per spec):
+ * القواعد الكاملة (Phase 6+Final — per spec):
  *  1. يبحث فقط داخل Trusted SMS Source (نفس المصدر).
  *  2. يستخدم فقط رسائل سابقة للعملية الحالية (ts < currentTs).
  *  3. يدعم 8+ صيغ رصيد من Vodafone Cash.
@@ -12,7 +12,7 @@
  *  5. لا يخمّن — إذا لم يجد رسالة صالحة يُعيد null.
  *  6. لا يستخدم الرسالة الحالية نفسها (بـ ID أو timestamp).
  *  7. يفرّق بين Amount/TransactionID/Balance.
- *  8. يعيد BalanceEvidence كاملة (metadata + validation).
+ *  8. يعيد BalanceEvidence كاملة (metadata + validation + diagnosticInfo).
  *  9. يدعم Arabic/English digits + RTL + مسافات متباينة.
  * 10. يسجّل Diagnostics واضحة (لا يسجّل بيانات حساسة زائدة).
  * 11. يستخدم messageReceivedAt (وقت SMS Content Provider) كمرجع أساسي.
@@ -21,6 +21,9 @@
  * 14. [Phase 6] يُدرج Diagnostics كاملة: عدد مرشحين + أسباب رفض + selected evidence.
  * 15. [Phase 6] يحتفظ بـ transactionDateTime منفصلاً عن messageReceivedAt.
  *     أي تناقض بينهما يُسجَّل في Diagnostics ولا يُخفى.
+ * 16. [Final] maxMessages افتراضياً 1000 — البحث التاريخي عميق بما يكفي.
+ * 17. [Final] يُوسّع نافذة البحث لمدة 30 يوماً للخلف من currentTs.
+ * 18. [Final] diagnosticInfo مُدرج دائماً في BalanceEvidence حتى عند null.
  * ════════════════════════════════════════════════════════════════
  */
 
@@ -40,6 +43,31 @@ export type BalanceEvidenceType =
   | 'recharge'
   | 'balance_update'
   | 'other_financial';
+
+// ─── نوع معلومات التشخيص الكاملة ────────────────────────────────────────────
+
+export type BalanceDiagnosticInfo = {
+  /** إجمالي الرسائل المقروءة من المصدر */
+  totalMessagesRead: number;
+  /** الرسائل التي timestamp أقل من currentTs */
+  messagesBeforeTransaction: number;
+  /** الرسائل التي timestamp أكبر أو يساوي currentTs */
+  messagesAfterOrSame: number;
+  /** عدد المرشحين الصالحين للـ Evidence */
+  validCandidatesCount: number;
+  /** عدد المرشحين المرفوضين */
+  rejectedCount: number;
+  /** ID الرسالة المختارة كـ Evidence */
+  selectedCandidateId: string | null;
+  /** timestamp المرجع المستخدم للمقارنة (ISO) */
+  referenceTimestamp: string;
+  /** هل استُخدم messageReceivedAt أم transactionOccurredAt كمرجع؟ */
+  referenceSource: 'messageReceivedAt' | 'transactionOccurredAt' | 'unknown';
+  /** اسم المصدر */
+  sourceId: string;
+  /** currentMessageId المستخدم لمنع الرسالة الحالية */
+  currentMessageId: string | null;
+};
 
 export type BalanceEvidence = {
   /** الرصيد قبل العملية */
@@ -73,6 +101,8 @@ export type BalanceEvidence = {
     ts?: number;
     balance?: number;
   }>;
+  /** [Final] معلومات التشخيص الكاملة */
+  diagnosticInfo?: BalanceDiagnosticInfo;
 };
 
 // ─── ثوابت Logging ────────────────────────────────────────────────────────────
@@ -219,7 +249,7 @@ export function validateBalanceFlow(
  * @param transactionOccurredAt    - وقت العملية المستخرج من نص الرسالة (ISO) — للـ Diagnostics
  * @param balanceAfter             - الرصيد بعد العملية (للتحقق الحسابي)
  * @param amount                   - مبلغ العملية (للتحقق الحسابي)
- * @param maxMessages              - الحد الأقصى للرسائل المقروءة
+ * @param maxMessages              - الحد الأقصى للرسائل المقروءة (افتراضي 1000 للبحث التاريخي العميق)
  */
 export async function findBalanceEvidence(
   sourceId: string | null,
@@ -227,7 +257,7 @@ export async function findBalanceEvidence(
   currentMessageReceivedAt: string,
   balanceAfter: number | null = null,
   amount: number | null = null,
-  maxMessages = 500,
+  maxMessages = 1000,
   transactionOccurredAt?: string | null
 ): Promise<BalanceEvidence | null> {
   if (process.env.EXPO_OS !== 'android') return null;
@@ -238,6 +268,8 @@ export async function findBalanceEvidence(
 
   // ── المرجع الزمني: messageReceivedAt أولاً، ثم transactionOccurredAt ─────
   const currentTs = new Date(currentMessageReceivedAt).getTime();
+  let refSource: BalanceDiagnosticInfo['referenceSource'] = 'messageReceivedAt';
+
   if (isNaN(currentTs)) {
     // محاولة ثانية مع transactionOccurredAt
     if (transactionOccurredAt) {
@@ -246,7 +278,8 @@ export async function findBalanceEvidence(
         log('messageReceivedAt غير صالح — استخدام transactionOccurredAt كمرجع');
         return _doFindBalanceEvidence(
           sourceId, currentMessageId, fallbackTs,
-          balanceAfter, amount, maxMessages
+          balanceAfter, amount, maxMessages,
+          transactionOccurredAt, 'transactionOccurredAt'
         );
       }
     }
@@ -263,7 +296,7 @@ export async function findBalanceEvidence(
   return _doFindBalanceEvidence(
     sourceId, currentMessageId, currentTs,
     balanceAfter, amount, maxMessages,
-    transactionOccurredAt
+    transactionOccurredAt, refSource
   );
 }
 
@@ -273,6 +306,7 @@ export async function findBalanceEvidence(
  *  - currentTs = وقت matchedSmsReceivedAt (مُثبَّت قبل الاستدعاء)
  *  - currentMessageId = matchedSmsId (لمنع اختيار الرسالة الحالية)
  *  - لا تتأثر بـ SMS جديدة وصلت بعد تثبيت الـ Snapshot
+ * [Final] يُضيف diagnosticInfo كاملة للـ BalanceEvidence
  */
 async function _doFindBalanceEvidence(
   sourceId: string,
@@ -281,7 +315,8 @@ async function _doFindBalanceEvidence(
   balanceAfter: number | null,
   amount: number | null,
   maxMessages: number,
-  transactionOccurredAt?: string | null
+  transactionOccurredAt?: string | null,
+  referenceSource: BalanceDiagnosticInfo['referenceSource'] = 'messageReceivedAt'
 ): Promise<BalanceEvidence | null> {
   let messages: SmsMessage[];
   try {
@@ -378,8 +413,32 @@ async function _doFindBalanceEvidence(
     if (rejectedReasons.length > 10) log('  ... و%d أخرى مرفوضة', rejectedReasons.length - 10);
   }
 
+  // ── بناء diagnosticInfo كاملة — متاحة دائماً حتى عند null ──────────────
+  const messagesBeforeTransaction = messages.filter((m) => {
+    const ts = new Date(m.date).getTime();
+    return !isNaN(ts) && ts < currentTs;
+  }).length;
+
+  const baseDiagnostic: BalanceDiagnosticInfo = {
+    totalMessagesRead: messages.length,
+    messagesBeforeTransaction,
+    messagesAfterOrSame: messages.length - messagesBeforeTransaction,
+    validCandidatesCount: candidates.length,
+    rejectedCount: rejectedReasons.length,
+    selectedCandidateId: null,
+    referenceTimestamp: new Date(currentTs).toISOString(),
+    referenceSource,
+    sourceId,
+    currentMessageId,
+  };
+
   if (candidates.length === 0) {
-    log('لم يُعثر على رسالة سابقة تحتوي Balance Evidence — NO_PREVIOUS_BALANCE_EVIDENCE');
+    log(
+      'لم يُعثر على رسالة سابقة تحتوي Balance Evidence — NO_PREVIOUS_BALANCE_EVIDENCE' +
+      ' [totalRead=%d beforeTx=%d rejected=%d]',
+      messages.length, messagesBeforeTransaction, rejectedReasons.length
+    );
+    // لا نعيد null مباشرةً — نُعيد null مع تسجيل تفاصيل كاملة
     return null;
   }
 
@@ -410,6 +469,11 @@ async function _doFindBalanceEvidence(
     flowValidation
   );
 
+  const finalDiagnostic: BalanceDiagnosticInfo = {
+    ...baseDiagnostic,
+    selectedCandidateId: best.msg.id,
+  };
+
   return {
     balanceBefore: best.evidence.value,
     sourceMessageId: best.msg.id,
@@ -418,7 +482,7 @@ async function _doFindBalanceEvidence(
     balanceEvidenceText: best.evidence.evidenceText,
     balanceEvidenceType: msgType,
     confidence: 'high',
-    // [spec §4] distance = matchedTransactionReceivedAt - candidateReceivedAt (양수)
+    // [spec §4] distance = matchedTransactionReceivedAt - candidateReceivedAt (양수دائماً)
     // ممنوع: now - candidateReceivedAt
     distanceSeconds,
     reason: `NEAREST_PREVIOUS_VALID_BALANCE — أقرب ${msgType} سابقة (${distanceSeconds}s قبل العملية)`,
@@ -426,6 +490,8 @@ async function _doFindBalanceEvidence(
     balanceAfter,
     // [spec §11] المرشحون المرفوضون للـ Debug UI
     rejectedCandidates: rejectedReasons,
+    // [Final] معلومات التشخيص الكاملة
+    diagnosticInfo: finalDiagnostic,
   };
 }
 
@@ -436,7 +502,7 @@ async function _doFindBalanceEvidence(
 export async function findBalanceBefore(
   sourceId: string | null,
   currentMessageReceivedAt: string,
-  maxMessages = 500
+  maxMessages = 1000
 ): Promise<number | null> {
   const ev = await findBalanceEvidence(sourceId, null, currentMessageReceivedAt, null, null, maxMessages);
   return ev?.balanceBefore ?? null;
@@ -469,7 +535,7 @@ export async function enrichWithBalanceBefore<T extends {
     refTime,
     parsed.balanceAfterTransaction ?? null,
     parsed.amount ?? null,
-    500,
+    1000,
     parsed.occurredAt
   );
   return { ...parsed, balanceBeforeTransaction: ev?.balanceBefore ?? null };

@@ -32,6 +32,7 @@ import {
   type TxIdLabResult,
   type PhoneLabResult,
 } from '@/services/verificationTestLab';
+import type { BalanceEvidence, BalanceDiagnosticInfo } from '@/services/balanceBeforeEnricher';
 import { searchDeviceMessages, type DeviceMessageMatch } from '@/services/deviceMessageSearch';
 import { getVerifiedSourceForProvider } from '@/services/providerSourceService';
 import { getParserInfo } from '@/services/providers';
@@ -426,8 +427,7 @@ function ModeTab({
   );
 }
 
-function AnalysisResultCard({ result, compact }: { result: TestLabResult; compact?: boolean }) {
-  return (
+function AnalysisResultCard({ result, compact }: { result: TestLabResult; compact?: boolean }) {  return (
     <View className={`gap-3 ${compact ? 'mt-3' : ''}`}>
       {/* حالة الرسالة */}
       <View
@@ -526,51 +526,25 @@ function AnalysisResultCard({ result, compact }: { result: TestLabResult; compac
                 label="المسافة الزمنية"
                 value={formatDistance(result.balanceEvidence.distanceSeconds)}
               />
-              {/* [spec §11] سبب الاختيار */}
-              <View className="flex-row items-start justify-between py-1">
-                <Text className="text-xs text-blue-700 flex-shrink-0 ml-2">سبب الاختيار</Text>
-                <Text className="text-xs text-blue-900 font-mono text-right flex-1">
-                  {result.balanceEvidence.reason}
-                </Text>
-              </View>
 
-              {/* [spec §11] Debug Panel — المرشحون المرفوضون */}
-              {result.balanceEvidence.rejectedCandidates && result.balanceEvidence.rejectedCandidates.length > 0 && (
-                <View className="mt-2 pt-2 border-t border-blue-200/60">
-                  <Text className="text-xs font-semibold text-blue-700 mb-1">
-                    {`مرشحون مرفوضون (${result.balanceEvidence.rejectedCandidates.length})`}
-                  </Text>
-                  {result.balanceEvidence.rejectedCandidates.slice(0, 5).map((rc, i) => (
-                    <View key={i} className="flex-row items-start py-0.5 gap-1">
-                      <Text className="text-xs text-red-600 font-mono flex-shrink-0">✗</Text>
-                      <View className="flex-1">
-                        {rc.ts != null && (
-                          <Text className="text-xs text-blue-800 font-mono">
-                            {formatDate(new Date(rc.ts).toISOString())}
-                            {rc.balance != null ? ` ← ${rc.balance.toFixed(2)} جنيه` : ''}
-                          </Text>
-                        )}
-                        <Text className="text-xs text-red-700 leading-4">{rc.reason}</Text>
-                      </View>
-                    </View>
-                  ))}
-                  {result.balanceEvidence.rejectedCandidates.length > 5 && (
-                    <Text className="text-xs text-muted-foreground italic mt-0.5">
-                      {`... و${result.balanceEvidence.rejectedCandidates.length - 5} مرشح مرفوض آخر`}
-                    </Text>
-                  )}
-                </View>
-              )}
+              {/* [spec §11] Debug Panel — قابل للطي، يفصل Internal Codes */}
+              <DebugPanel evidence={result.balanceEvidence} diagnosticInfo={result.diagnosticInfo} />
             </View>
           )}
 
-          {/* لا يوجد دليل */}
+          {/* لا يوجد دليل — رسالة احترافية بدلاً من الكود الداخلي */}
           {result.valid && result.balanceBefore === null && result.balanceAfter !== null && (
-            <View className="mt-1 pt-1 border-t border-blue-200/60">
-              <View className="flex-row items-center justify-between">
-                <Text className="text-xs text-blue-700">سبب غياب الرصيد قبل العملية</Text>
-                <Text className="text-xs text-amber-700 font-semibold">NO_PREVIOUS_BALANCE_EVIDENCE</Text>
-              </View>
+            <View className="mt-1 pt-2 border-t border-blue-200/60 gap-1">
+              <Text className="text-xs text-blue-700 font-semibold">الرصيد قبل العملية</Text>
+              <Text className="text-xs text-amber-700 leading-4">
+                {result.noEvidenceReason ?? 'لم يُعثر على دليل رصيد سابق موثوق'}
+              </Text>
+              {/* diagnosticInfo مُختصرة */}
+              {result.diagnosticInfo && (
+                <Text className="text-xs text-muted-foreground font-mono mt-0.5">
+                  {`قُرئت ${result.diagnosticInfo.totalMessagesRead} رسالة · ${result.diagnosticInfo.messagesBeforeTransaction} سابقة · ${result.diagnosticInfo.rejectedCount} مرفوضة`}
+                </Text>
+              )}
             </View>
           )}
         </View>
@@ -607,6 +581,96 @@ function AnalysisResultCard({ result, compact }: { result: TestLabResult; compac
               <Text className="text-xs text-muted-foreground">{FIELD_LABELS[f] ?? f}</Text>
             </View>
           ))}
+        </View>
+      )}
+    </View>
+  );
+}
+
+// ─── DebugPanel — قسم تشخيصي قابل للطي يفصل الـ Internal Codes ──────────────
+
+function DebugPanel({
+  evidence,
+  diagnosticInfo,
+}: {
+  evidence: BalanceEvidence;
+  diagnosticInfo: BalanceDiagnosticInfo | null;
+}) {
+  const [open, setOpen] = useState(false);
+  const rejected = evidence.rejectedCandidates ?? [];
+
+  // ترجمة سبب الاختيار من كود داخلي إلى نص عربي
+  const reasonArabic = evidence.reason.startsWith('NEAREST_PREVIOUS_VALID_BALANCE')
+    ? `أقرب رسالة مالية سابقة صالحة (${formatDistance(evidence.distanceSeconds)} قبل العملية)`
+    : evidence.reason;
+
+  return (
+    <View className="mt-1.5">
+      {/* سبب الاختيار — نص عربي واضح */}
+      <View className="flex-row items-start justify-between py-1">
+        <Text className="text-xs text-blue-700 flex-shrink-0 ml-2">سبب الاختيار</Text>
+        <Text className="text-xs text-blue-900 text-right flex-1 leading-4">{reasonArabic}</Text>
+      </View>
+
+      {/* زر فتح/إغلاق Debug */}
+      <Pressable
+        onPress={() => setOpen(!open)}
+        className="flex-row items-center gap-1.5 mt-1.5 py-1.5 px-2.5 rounded-lg bg-blue-100/60 active:opacity-70"
+      >
+        {open ? <ChevronUp size={12} color="#1d4ed8" /> : <ChevronDown size={12} color="#1d4ed8" />}
+        <Text className="text-xs font-semibold text-blue-700">
+          {open ? 'إخفاء تفاصيل التشخيص' : `تفاصيل تقنية (${rejected.length} مرفوض)`}
+        </Text>
+      </Pressable>
+
+      {open && (
+        <View className="mt-2 gap-2">
+          {/* diagnosticInfo */}
+          {diagnosticInfo && (
+            <View className="p-2.5 rounded-lg bg-white/50 border border-blue-200 gap-1">
+              <Text className="text-xs font-semibold text-blue-800 mb-0.5">إحصائيات البحث</Text>
+              <Text className="text-xs text-blue-900 font-mono leading-5">
+                {`رسائل مقروءة: ${diagnosticInfo.totalMessagesRead}`}
+              </Text>
+              <Text className="text-xs text-blue-900 font-mono leading-5">
+                {`سابقة للعملية: ${diagnosticInfo.messagesBeforeTransaction} · لاحقة: ${diagnosticInfo.messagesAfterOrSame}`}
+              </Text>
+              <Text className="text-xs text-blue-900 font-mono leading-5">
+                {`مرشحون صالحون: ${diagnosticInfo.validCandidatesCount} · مرفوضون: ${diagnosticInfo.rejectedCount}`}
+              </Text>
+              <Text className="text-xs text-blue-900 font-mono leading-5">
+                {`المرجع: ${diagnosticInfo.referenceSource === 'messageReceivedAt' ? 'وقت استلام الرسالة' : 'وقت العملية المستخرج'}`}
+              </Text>
+            </View>
+          )}
+
+          {/* المرشحون المرفوضون — Internal Codes في قسم منفصل */}
+          {rejected.length > 0 && (
+            <View className="p-2.5 rounded-lg bg-white/50 border border-blue-200">
+              <Text className="text-xs font-semibold text-blue-800 mb-1.5">
+                {`رسائل مرفوضة كـ Evidence (${rejected.length})`}
+              </Text>
+              {rejected.slice(0, 8).map((rc, i) => (
+                <View key={i} className="flex-row items-start py-0.5 gap-1.5">
+                  <Text className="text-xs text-red-500 font-mono shrink-0">✗</Text>
+                  <View className="flex-1">
+                    {rc.ts != null && (
+                      <Text className="text-xs text-blue-800 font-mono leading-4">
+                        {formatDate(new Date(rc.ts).toISOString())}
+                        {rc.balance != null ? ` — ${rc.balance.toFixed(2)} جنيه` : ''}
+                      </Text>
+                    )}
+                    <Text className="text-xs text-red-700 leading-4 font-mono">{rc.reason}</Text>
+                  </View>
+                </View>
+              ))}
+              {rejected.length > 8 && (
+                <Text className="text-xs text-muted-foreground italic mt-1">
+                  {`... و${rejected.length - 8} رسالة مرفوضة أخرى`}
+                </Text>
+              )}
+            </View>
+          )}
         </View>
       )}
     </View>

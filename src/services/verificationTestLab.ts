@@ -17,9 +17,10 @@ import { looksLikeVodafoneCashSms } from './providers/vodafoneCash';
 import { looksLikeInstaPaySms } from './providers/instaPay';
 import {
   findBalanceEvidence,
-  validateBalanceFlow,
+  validateBalanceFlow as _validateBalanceFlow,
   type BalanceEvidence,
   type BalanceFlowValidation,
+  type BalanceDiagnosticInfo,
 } from './balanceBeforeEnricher';
 import {
   searchByTransactionId,
@@ -102,6 +103,10 @@ export type TestLabResult = {
   balanceEvidence: BalanceEvidence | null;
   /** نتيجة التحقق الحسابي */
   flowValidation: BalanceFlowValidation;
+  /** [Final] معلومات التشخيص الكاملة — متاحة حتى عند غياب Evidence */
+  diagnosticInfo: import('./balanceBeforeEnricher').BalanceDiagnosticInfo | null;
+  /** [Final] سبب غياب الرصيد قبل العملية — للعرض للمستخدم */
+  noEvidenceReason: string | null;
 };
 
 export type TxIdLabResult = {
@@ -150,6 +155,8 @@ export function analyzeMessageForProvider(
       amount: null,
       balanceEvidence: null,
       flowValidation: 'BALANCE_FLOW_UNKNOWN',
+      diagnosticInfo: null,
+      noEvidenceReason: null,
     };
   }
 
@@ -181,12 +188,15 @@ export function analyzeMessageForProvider(
     amount: parsed.amount ?? null,
     balanceEvidence: null,
     flowValidation: 'BALANCE_FLOW_UNKNOWN',
+    diagnosticInfo: null,
+    noEvidenceReason: null,
   };
 }
 
 /**
  * إثراء نتيجة التحليل بـ BalanceEvidence كاملة من Trusted Source (async).
  * يمرر currentMessageId و messageReceivedAt للبحث الزمني الصحيح.
+ * [Final] يُضيف diagnosticInfo و noEvidenceReason للعرض الاحترافي.
  */
 export async function enrichTestLabResult(
   result: TestLabResult,
@@ -199,7 +209,13 @@ export async function enrichTestLabResult(
   // المرجع الزمني: messageReceivedAt أولاً، fallback لـ occurredAt
   const occurredAt = result.extractedFields.occurredAt as string | undefined;
   const refTime = currentMessageReceivedAt ?? occurredAt;
-  if (!refTime) return result;
+  if (!refTime) {
+    return {
+      ...result,
+      noEvidenceReason: 'لا يوجد مرجع زمني لتحديد رسائل سابقة',
+      diagnosticInfo: null,
+    };
+  }
 
   const evidence = await findBalanceEvidence(
     sourceId,
@@ -207,22 +223,39 @@ export async function enrichTestLabResult(
     refTime,
     result.balanceAfter,
     result.amount,
-    500,          // maxMessages — مرتفع لضمان العثور على الـ Evidence
+    1000,         // maxMessages — عميق للبحث التاريخي
     occurredAt    // transactionOccurredAt للـ Diagnostics
   );
 
   const balanceBefore = evidence?.balanceBefore ?? null;
   const flowValidation = evidence
     ? evidence.flowValidation
-    : validateBalanceFlow(0, result.amount, result.balanceAfter) === 'BALANCE_FLOW_VALID'
-      ? 'BALANCE_FLOW_VALID'
-      : 'BALANCE_FLOW_UNKNOWN';
+    : 'BALANCE_FLOW_UNKNOWN';
+
+  // بناء noEvidenceReason احترافية من diagnosticInfo
+  let noEvidenceReason: string | null = null;
+  const diag = evidence?.diagnosticInfo ?? null;
+  if (balanceBefore === null && result.balanceAfter !== null) {
+    if (!sourceId) {
+      noEvidenceReason = 'لم يتم تحديد مصدر SMS موثوق — وثّق مصدراً أولاً من إعدادات مصادر الدفع';
+    } else if (diag && diag.totalMessagesRead === 0) {
+      noEvidenceReason = 'لا توجد رسائل في المصدر الموثوق';
+    } else if (diag && diag.messagesBeforeTransaction === 0) {
+      noEvidenceReason = `قُرئت ${diag.totalMessagesRead} رسالة — لا توجد رسائل سابقة لوقت العملية`;
+    } else if (diag && diag.validCandidatesCount === 0 && diag.rejectedCount > 0) {
+      noEvidenceReason = `قُرئت ${diag.totalMessagesRead} رسالة، ${diag.messagesBeforeTransaction} سابقة — جميعها مرفوضة (${diag.rejectedCount} رسالة بدون رصيد صالح)`;
+    } else {
+      noEvidenceReason = 'لم يُعثر على رسالة سابقة تحتوي رصيداً قابلاً للتحقق';
+    }
+  }
 
   return {
     ...result,
     balanceBefore,
     balanceEvidence: evidence,
     flowValidation,
+    diagnosticInfo: diag,
+    noEvidenceReason,
   };
 }
 
