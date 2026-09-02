@@ -507,6 +507,8 @@ function AnalysisResultCard({ result, compact }: { result: TestLabResult; compac
                   {`"${result.balanceEvidence.balanceEvidenceText}"`}
                 </Text>
               </View>
+              {/* [spec §10] sourceMessageId */}
+              <Row label="ID رسالة الدليل" value={result.balanceEvidence.sourceMessageId} mono />
               <Row label="وقت الرسالة الدليل" value={formatDate(result.balanceEvidence.sourceMessageReceivedAt)} />
               <Row label="المرسِل" value={result.balanceEvidence.sourceSender} mono />
               <Row
@@ -519,17 +521,46 @@ function AnalysisResultCard({ result, compact }: { result: TestLabResult; compac
                   'رسالة مالية'
                 }
               />
+              {/* [spec §4] distance = transactionReceivedAt - evidenceReceivedAt */}
               <Row
                 label="المسافة الزمنية"
                 value={formatDistance(result.balanceEvidence.distanceSeconds)}
               />
-              {/* [Phase 6] سبب الاختيار */}
+              {/* [spec §11] سبب الاختيار */}
               <View className="flex-row items-start justify-between py-1">
                 <Text className="text-xs text-blue-700 flex-shrink-0 ml-2">سبب الاختيار</Text>
                 <Text className="text-xs text-blue-900 font-mono text-right flex-1">
                   {result.balanceEvidence.reason}
                 </Text>
               </View>
+
+              {/* [spec §11] Debug Panel — المرشحون المرفوضون */}
+              {result.balanceEvidence.rejectedCandidates && result.balanceEvidence.rejectedCandidates.length > 0 && (
+                <View className="mt-2 pt-2 border-t border-blue-200/60">
+                  <Text className="text-xs font-semibold text-blue-700 mb-1">
+                    {`مرشحون مرفوضون (${result.balanceEvidence.rejectedCandidates.length})`}
+                  </Text>
+                  {result.balanceEvidence.rejectedCandidates.slice(0, 5).map((rc, i) => (
+                    <View key={i} className="flex-row items-start py-0.5 gap-1">
+                      <Text className="text-xs text-red-600 font-mono flex-shrink-0">✗</Text>
+                      <View className="flex-1">
+                        {rc.ts != null && (
+                          <Text className="text-xs text-blue-800 font-mono">
+                            {formatDate(new Date(rc.ts).toISOString())}
+                            {rc.balance != null ? ` ← ${rc.balance.toFixed(2)} جنيه` : ''}
+                          </Text>
+                        )}
+                        <Text className="text-xs text-red-700 leading-4">{rc.reason}</Text>
+                      </View>
+                    </View>
+                  ))}
+                  {result.balanceEvidence.rejectedCandidates.length > 5 && (
+                    <Text className="text-xs text-muted-foreground italic mt-0.5">
+                      {`... و${result.balanceEvidence.rejectedCandidates.length - 5} مرشح مرفوض آخر`}
+                    </Text>
+                  )}
+                </View>
+              )}
             </View>
           )}
 

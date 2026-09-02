@@ -56,7 +56,9 @@ export type BalanceEvidence = {
   balanceEvidenceType: BalanceEvidenceType;
   /** مستوى الثقة */
   confidence: 'high' | 'medium';
-  /** المسافة الزمنية بالثوانٍ بين رسالة الدليل والعملية الحالية */
+  /** المسافة الزمنية بالثوانٍ بين رسالة الدليل والعملية الحالية
+   *  = matchedTransactionReceivedAt - candidateReceivedAt  (양수دائماً)
+   *  ممنوع: now - candidateReceivedAt */
   distanceSeconds: number;
   /** سبب الاختيار */
   reason: string;
@@ -64,6 +66,13 @@ export type BalanceEvidence = {
   flowValidation: BalanceFlowValidation;
   /** قيمة balanceAfter للمقارنة */
   balanceAfter: number | null;
+  /** [spec §10] المرشحون المرفوضون للـ Debug — كل مرشح مع سبب رفضه */
+  rejectedCandidates?: Array<{
+    id: string;
+    reason: string;
+    ts?: number;
+    balance?: number;
+  }>;
 };
 
 // ─── ثوابت Logging ────────────────────────────────────────────────────────────
@@ -302,7 +311,7 @@ async function _doFindBalanceEvidence(
   }
 
   // ── فلترة وجمع المرشحين ──────────────────────────────────────────────────
-  const rejectedReasons: Array<{ id: string; reason: string }> = [];
+  const rejectedReasons: Array<{ id: string; reason: string; ts?: number; balance?: number }> = [];
   const candidates: Array<{ msg: SmsMessage; msgTs: number; evidence: { value: number; evidenceText: string } }> = [];
 
   for (const msg of messages) {
@@ -322,28 +331,35 @@ async function _doFindBalanceEvidence(
     if (msgTs >= currentTs) {
       // ② ب: نفس الـ timestamp بدون ID — محتمل أن تكون الرسالة الحالية
       if (currentMessageId == null && msgTs === currentTs) {
-        rejectedReasons.push({ id: msg.id, reason: 'CURRENT_MESSAGE — نفس الـ timestamp (msgTs==currentTs) بدون ID' });
+        rejectedReasons.push({ id: msg.id, reason: 'CURRENT_MESSAGE — نفس الـ timestamp (msgTs==currentTs) بدون ID', ts: msgTs });
         continue;
       }
-      rejectedReasons.push({ id: msg.id, reason: `FUTURE_OR_SAME_TIME — ts=${msgTs} >= currentTs=${currentTs}` });
+      // [spec §6] REJECTED_FUTURE_RELATIVE_TO_TRANSACTION
+      const ev = extractBalanceEvidence(msg.body);
+      rejectedReasons.push({
+        id: msg.id,
+        reason: `REJECTED_FUTURE_RELATIVE_TO_TRANSACTION — ts=${new Date(msgTs).toISOString()} >= currentTs=${new Date(currentTs).toISOString()}`,
+        ts: msgTs,
+        balance: ev?.value,
+      });
       continue;
     }
 
     // ③ Source filtering — رسائل VF Cash فقط
     if (!isVodafoneCashMessage(msg.body)) {
-      rejectedReasons.push({ id: msg.id, reason: 'SOURCE_MISMATCH — ليست رسالة Vodafone Cash' });
+      rejectedReasons.push({ id: msg.id, reason: 'SOURCE_MISMATCH — ليست رسالة Vodafone Cash', ts: msgTs });
       continue;
     }
 
     // ④ Balance Evidence validation
     if (!isValidBalanceEvidenceMessage(msg.body)) {
-      rejectedReasons.push({ id: msg.id, reason: 'NO_BALANCE_EVIDENCE — لا تحتوي Balance صالح أو رسالة ترويجية' });
+      rejectedReasons.push({ id: msg.id, reason: 'NO_BALANCE_EVIDENCE — لا تحتوي Balance صالح أو رسالة ترويجية', ts: msgTs });
       continue;
     }
 
     const evidence = extractBalanceEvidence(msg.body);
     if (!evidence) {
-      rejectedReasons.push({ id: msg.id, reason: 'INVALID_BALANCE_FORMAT — فشل استخراج قيمة الرصيد' });
+      rejectedReasons.push({ id: msg.id, reason: 'INVALID_BALANCE_FORMAT — فشل استخراج قيمة الرصيد', ts: msgTs });
       continue;
     }
 
@@ -402,10 +418,14 @@ async function _doFindBalanceEvidence(
     balanceEvidenceText: best.evidence.evidenceText,
     balanceEvidenceType: msgType,
     confidence: 'high',
+    // [spec §4] distance = matchedTransactionReceivedAt - candidateReceivedAt (양수)
+    // ممنوع: now - candidateReceivedAt
     distanceSeconds,
     reason: `NEAREST_PREVIOUS_VALID_BALANCE — أقرب ${msgType} سابقة (${distanceSeconds}s قبل العملية)`,
     flowValidation,
     balanceAfter,
+    // [spec §11] المرشحون المرفوضون للـ Debug UI
+    rejectedCandidates: rejectedReasons,
   };
 }
 
