@@ -207,7 +207,11 @@ export function parseVodafoneCashSms(message: string): ProviderParseResult | nul
   const dateMatch = normalized.match(
     /(?:تاريخ\s+(?:العمليه|العملية|المعامله|المعاملة)|التاريخ)\s*[:\s]\s*([\d]{2}[\-\/][\d]{2}[\-\/][\d]{2,4}\s+[\d]{2}:[\d]{2}|[\d]{1,2}:[\d]{2}(?::[\d]{2})?\s+[\d]{1,2}[\/-][\d]{1,2}[\/-][\d]{2,4})/
   );
-  const occurredAt = parseOccurredAt(dateMatch ? dateMatch[1] : null) ?? new Date().toISOString();
+  // إذا لم يُعثر على تاريخ في الرسالة → نستخدم epoch بدلاً من new Date()
+  // حتى لا يصبح "الآن" مرجعاً زمنياً خاطئاً لحساب Balance Before.
+  // epoch (1970-01-01) يضمن أن لا رسالة سابقة ستُختار كـ Evidence
+  // لأنها ستكون أحدث منه دائماً → BalanceBefore = null (آمن).
+  const occurredAt = parseOccurredAt(dateMatch ? dateMatch[1] : null) ?? '1970-01-01T00:00:00.000Z';
 
   return {
     provider: 'vodafone_cash',
