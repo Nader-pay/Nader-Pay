@@ -79,6 +79,51 @@ Deno.serve(async (req: Request) => {
   const { data: cred } = await db.from('api_credentials').select('environment').eq('id', credential_id).maybeSingle();
   const credentialEnv = cred?.environment ?? 'sandbox';
 
+  // GET /payment-requests — جلب قائمة الطلبات (يستخدمه التطبيق لجلب الطلبات من الموقع)
+  if (req.method === 'GET' && pathParts.length === 0) {
+    const statusFilter = url.searchParams.get('status');
+    const sinceFilter  = url.searchParams.get('since');
+    const limitParam   = url.searchParams.get('limit');
+    const limit        = Math.min(parseInt(limitParam ?? '500', 10) || 500, 1000);
+
+    let query = db
+      .from('payment_requests')
+      .select('id, status, created_at, updated_at, expires_at, external_reference, order_reference, amount, currency, payment_type, expected_sender_phone, expected_sender_name, expected_recipient_wallet, destination, customer, verification, metadata, reason_code')
+      .eq('account_id', account_id)
+      .order('created_at', { ascending: false })
+      .limit(limit);
+
+    if (statusFilter) query = query.eq('status', statusFilter.toUpperCase());
+    if (sinceFilter)  query = query.gte('updated_at', sinceFilter);
+
+    const { data: rows, error: listErr } = await query;
+    if (listErr) return jsonErr('DB_ERROR', listErr.message, 500, request_id);
+
+    // نُعيد الطلبات بصيغة متوافقة مع ما يتوقعه التطبيق (normalizeOrder)
+    const orders = (rows ?? []).map((pr) => ({
+      id: pr.id,
+      status: pr.status,
+      amount: pr.amount,
+      currency: pr.currency,
+      payment_type: pr.payment_type,
+      external_reference: pr.external_reference,
+      order_reference: pr.order_reference,
+      expected_recipient_wallet: pr.expected_recipient_wallet,
+      expected_sender_phone: pr.expected_sender_phone,
+      expected_sender_name: pr.expected_sender_name,
+      destination: pr.destination,
+      customer: pr.customer,
+      verification: pr.verification,
+      metadata: pr.metadata,
+      reason_code: pr.reason_code,
+      created_at: pr.created_at,
+      updated_at: pr.updated_at,
+      expires_at: pr.expires_at,
+    }));
+
+    return jsonOk({ orders, total: orders.length });
+  }
+
   // POST /payment-requests — إنشاء
   if (req.method === 'POST' && pathParts.length === 0) {
     const idemKey = req.headers.get('x-idempotency-key');

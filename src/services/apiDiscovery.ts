@@ -60,16 +60,16 @@ function buildBackendProxyV2Contract(baseUrl: string): BackendApiContract {
     discoveryEndpoint: buildAbsoluteUrl(baseUrl, '/config'),
     endpoints: {
       config: '/config',
-      orders: '/orders',
-      receive: '/orders/{id}/receive',
-      verify: '/orders/{id}/verify',
-      confirm: '/orders/{id}/confirm',
-      reject: '/orders/{id}/reject',
-      duplicate: '/orders/{id}/duplicate',
-      // device-api هي Supabase Edge Function منفصلة — المسار يبدأ بـ device-api/
-      // register-with-auth يستخدم Supabase JWT (جلسة المستخدم) وليس API key
+      // ── الاسم الصحيح للـ Edge Function هو payment-requests ──
+      orders:    'payment-requests',
+      receive:   'payment-requests/{id}/receive',
+      verify:    'payment-requests/{id}/verify',
+      confirm:   'payment-requests/{id}/confirm',
+      reject:    'payment-requests/{id}/reject',
+      duplicate: 'payment-requests/{id}/duplicate',
+      // device-api هي Supabase Edge Function منفصلة
       deviceRegister: 'device-api/register-with-auth',
-      heartbeat: 'device-api/{id}/heartbeat',
+      heartbeat:      'device-api/{id}/heartbeat',
     },
     auth: { type: 'bearer', in: 'header', prefix: 'Bearer' },
   };

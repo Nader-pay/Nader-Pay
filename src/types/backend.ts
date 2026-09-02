@@ -71,16 +71,26 @@ export type RawOrder = {
   customer?: string | { [key: string]: unknown };
   user?: string | { [key: string]: unknown };
   payment_method?: string;
+  payment_type?: string;                  // حقل payment_requests
   provider?: string;
   amount?: number;
   currency?: string;
+  // حقول payment_requests المباشرة
+  expected_sender_phone?: string;
+  expected_sender_name?: string;
+  expected_recipient_wallet?: string;
+  // حقول الخوادم الخارجية (legacy)
   sender_phone?: string;
   receiver_phone?: string;
   sender_name?: string;
   transaction_id?: string;
   transaction_reference?: string;
+  external_reference?: string;
+  order_reference?: string;
+  reason_code?: string;
   order_created_at?: string;
   created_at?: string;
+  updated_at?: string;
   message_received_at?: string;
   service?: string;
   type?: string;

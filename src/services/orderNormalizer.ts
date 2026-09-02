@@ -44,18 +44,23 @@ export function normalizeOrder(raw: RawOrder): NormalizedOrder {
   const expiresAt = (raw.expires_at as string) || null;
   const status = (raw.status as string) || 'new';
 
+  // دعم حقول payment_requests (expected_*) إضافة إلى حقول الخوادم الخارجية (legacy)
+  const senderPhone   = (raw.expected_sender_phone  as string) || (raw.sender_phone  as string) || null;
+  const senderName    = (raw.expected_sender_name   as string) || (raw.sender_name   as string) || null;
+  const receiverPhone = (raw.expected_recipient_wallet as string) || (raw.receiver_phone as string) || null;
+
   return {
     orderId,
     customer: typeof raw.customer === 'string' ? raw.customer : raw.user ? String(raw.user) : undefined,
-    paymentMethod: (raw.payment_method as string) || provider || undefined,
+    paymentMethod: (raw.payment_method as string) || (raw.payment_type as string) || provider || undefined,
     provider,
     amount,
     currency,
-    senderPhone: (raw.sender_phone as string) || null,
-    receiverPhone: (raw.receiver_phone as string) || null,
-    senderName: (raw.sender_name as string) || null,
+    senderPhone,
+    receiverPhone,
+    senderName,
     transactionId: (raw.transaction_id as string) || null,
-    transactionReference: (raw.transaction_reference as string) || null,
+    transactionReference: (raw.transaction_reference as string) || (raw.external_reference as string) || null,
     orderCreatedAt: createdAt,
     messageReceivedAt: (raw.message_received_at as string) || null,
     service: (raw.service as string) || null,
