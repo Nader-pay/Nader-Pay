@@ -1,8 +1,8 @@
-// شاشة Webhook Config — إعداد واستقبال إشعارات الدفع
-import { View, Text, ScrollView, Pressable, TextInput, ActivityIndicator } from 'react-native';
+// شاشة Webhook Config — إعداد + سجلات التسليم
+import { View, Text, ScrollView, Pressable, TextInput, ActivityIndicator, RefreshControl } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useState, useCallback } from 'react';
-import { Copy, CheckCircle2, ChevronLeft, Webhook, RefreshCw } from 'lucide-react-native';
+import { Copy, CheckCircle2, ChevronLeft, Webhook, RefreshCw, AlertCircle, XCircle, Clock } from 'lucide-react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from 'expo-router';
 import * as Clipboard from 'expo-clipboard';
@@ -11,8 +11,19 @@ import { supabase } from '@/client/supabase';
 type WebhookEndpoint = {
   id: string;
   url: string;
-  secret: string;
   status: 'active' | 'inactive';
+  auth_mode: string;
+  health_status: string | null;
+  last_test_at: string | null;
+  created_at: string;
+};
+
+type WebhookDelivery = {
+  id: string;
+  status: 'delivered' | 'failed' | 'pending';
+  http_status: number | null;
+  event_type: string | null;
+  attempts: number;
   created_at: string;
 };
 
@@ -35,41 +46,74 @@ function CodeBlock({ code }: { code: string }) {
   );
 }
 
+function formatRelative(iso: string | null): string {
+  if (!iso) return '—';
+  const diff = Date.now() - new Date(iso).getTime();
+  const m = Math.floor(diff / 60000);
+  if (m < 1) return 'الآن';
+  if (m < 60) return `منذ ${m} د`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `منذ ${h} س`;
+  return `منذ ${Math.floor(h / 24)} ي`;
+}
+
 export default function WebhookScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
 
   const [endpoints, setEndpoints] = useState<WebhookEndpoint[]>([]);
+  const [deliveries, setDeliveries] = useState<WebhookDelivery[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [url, setUrl] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
   const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL ?? '';
-  const webhookReceiverUrl = `${supabaseUrl}/functions/v1/naderpay-webhook`;
 
-  const fetchEndpoints = useCallback(async () => {
-    setLoading(true);
+  const fetchAll = useCallback(async () => {
     setError(null);
     try {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) { setLoading(false); return; }
 
-      const res = await fetch(
-        `${supabaseUrl}/functions/v1/naderpay-admin/webhook-endpoints`,
-        { headers: { Authorization: `Bearer ${session.access_token}`, 'apikey': process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY! } }
-      );
-      if (res.ok) {
-        const json = await res.json();
+      const headers = {
+        Authorization: `Bearer ${session.access_token}`,
+        apikey: process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY!,
+      };
+
+      // جلب endpoints + deliveries بالتوازي
+      const [epRes, statsRes] = await Promise.all([
+        fetch(`${supabaseUrl}/functions/v1/naderpay-admin/webhook-endpoints`, { headers }),
+        fetch(`${supabaseUrl}/functions/v1/integration-status`, { headers }),
+      ]);
+
+      if (epRes.ok) {
+        const json = await epRes.json();
         setEndpoints(json.endpoints ?? []);
       }
+      if (statsRes.ok) {
+        const json = await statsRes.json();
+        // نستخرج webhook_deliveries من integration-status
+        // webhook_deliveries قد تأتي ضمن integrations أو منفصلة
+        const allDeliveries: WebhookDelivery[] = [];
+        const integrations: Array<{ webhook_deliveries?: WebhookDelivery[] }> = json.integrations ?? [];
+        integrations.forEach((i) => {
+          if (Array.isArray(i.webhook_deliveries)) {
+            allDeliveries.push(...i.webhook_deliveries);
+          }
+        });
+        setDeliveries(allDeliveries);
+      }
     } catch { /* تجاهل */ }
-    finally { setLoading(false); }
+    finally { setLoading(false); setRefreshing(false); }
   }, [supabaseUrl]);
 
-  useFocusEffect(useCallback(() => { (async () => { await fetchEndpoints(); })(); }, [fetchEndpoints]));
+  useFocusEffect(useCallback(() => { (async () => { await fetchAll(); })(); }, [fetchAll]));
+
+  const onRefresh = () => { setRefreshing(true); fetchAll(); };
 
   const handleSave = async () => {
     if (!url.trim() || !url.startsWith('http')) {
@@ -81,22 +125,19 @@ export default function WebhookScreen() {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) throw new Error('يجب تسجيل الدخول');
 
-      const res = await fetch(
-        `${supabaseUrl}/functions/v1/naderpay-admin/webhook-endpoints`,
-        {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${session.access_token}`,
-            'apikey': process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY!,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ url: url.trim() }),
-        }
-      );
+      const res = await fetch(`${supabaseUrl}/functions/v1/naderpay-admin/webhook-endpoints`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${session.access_token}`,
+          apikey: process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY!,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ url: url.trim() }),
+      });
       if (res.ok) {
         setSuccess('تم إضافة Webhook بنجاح');
         setUrl('');
-        await fetchEndpoints();
+        await fetchAll();
       } else {
         const json = await res.json();
         throw new Error(json?.error?.message ?? 'فشل الحفظ');
@@ -114,6 +155,12 @@ export default function WebhookScreen() {
     setTimeout(() => setCopiedId(null), 2000);
   };
 
+  function deliveryStatusIcon(s: string) {
+    if (s === 'delivered') return <CheckCircle2 size={14} color="#15803D" />;
+    if (s === 'failed')    return <XCircle size={14} color="#DC2626" />;
+    return <Clock size={14} color="#9CA3AF" />;
+  }
+
   return (
     <View className="flex-1 bg-[#F8F9FB]">
       {/* Header */}
@@ -128,7 +175,7 @@ export default function WebhookScreen() {
           <Text className="text-[17px] font-bold text-[#111827]">إعداد Webhook</Text>
           <Text className="text-[12px] text-[#9CA3AF]">استقبل تأكيد الدفع فورياً</Text>
         </View>
-        <Pressable onPress={fetchEndpoints} className="active:opacity-60 p-1">
+        <Pressable onPress={onRefresh} className="active:opacity-60 p-1">
           <RefreshCw size={18} color="#6B7280" />
         </Pressable>
       </View>
@@ -136,19 +183,17 @@ export default function WebhookScreen() {
       <ScrollView
         contentContainerStyle={{ padding: 20, paddingBottom: insets.bottom + 40, gap: 16 }}
         showsVerticalScrollIndicator={false}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
       >
         {/* كيف يعمل Webhook */}
-        <View
-          className="bg-white border border-[#E5E7EB] rounded-2xl px-5 py-4"
-          style={{ borderCurve: 'continuous' }}
-        >
+        <View className="bg-white border border-[#E5E7EB] rounded-2xl px-5 py-4" style={{ borderCurve: 'continuous' }}>
           <Text className="text-[13px] font-semibold text-[#111827] mb-3">كيف يعمل Webhook؟</Text>
-          <View className="gap-3">
+          <View className="gap-2.5">
             {[
-              { step: '1', text: 'عميلك يدفع عبر التطبيق' },
-              { step: '2', text: 'التطبيق يتحقق من الدفع ويؤكده' },
-              { step: '3', text: 'يُرسل طلب POST تلقائي إلى عنوان Webhook موقعك' },
-              { step: '4', text: 'موقعك يستقبل البيانات ويحدّث حالة الطلب' },
+              { step: '1', text: 'عميلك يدفع عبر محفظة / InstaPay' },
+              { step: '2', text: 'محرّك التحقق يطابق رسالة SMS أو التحويل' },
+              { step: '3', text: 'يُرسل POST موقّع بـ HMAC-SHA256 إلى موقعك' },
+              { step: '4', text: 'موقعك يتحقق من التوقيع ويُحدّث الطلب' },
             ].map((item) => (
               <View key={item.step} className="flex-row items-center gap-3">
                 <View className="w-6 h-6 rounded-full bg-[#F3F4F6] items-center justify-center">
@@ -160,42 +205,17 @@ export default function WebhookScreen() {
           </View>
         </View>
 
-        {/* عنوان Webhook الخاص بالتطبيق */}
-        <View
-          className="bg-white border border-[#E5E7EB] rounded-2xl px-5 py-4"
-          style={{ borderCurve: 'continuous' }}
-        >
-          <Text className="text-[13px] font-semibold text-[#111827] mb-1">
-            عنوان Webhook المُرسِل (من التطبيق)
-          </Text>
-          <Text className="text-[12px] text-[#6B7280] mb-3 leading-5">
-            هذا العنوان يُرسل إشعارات Webhook. أضفه في whitelist موقعك إذا كان لديك firewall.
-          </Text>
-          <View className="bg-[#F8F9FB] border border-[#E5E7EB] rounded-xl px-4 py-3 flex-row items-center gap-2">
-            <Text className="flex-1 text-[11px] font-mono text-[#374151]" numberOfLines={2}>
-              {webhookReceiverUrl}
-            </Text>
-            <Pressable onPress={() => copyText(webhookReceiverUrl, 'recv_url')} className="active:opacity-60">
-              {copiedId === 'recv_url'
-                ? <CheckCircle2 size={16} color="#15803D" />
-                : <Copy size={16} color="#9CA3AF" />}
-            </Pressable>
+        {/* إضافة endpoint جديد */}
+        <View className="bg-white border border-[#E5E7EB] rounded-2xl px-5 py-4" style={{ borderCurve: 'continuous' }}>
+          <View className="flex-row items-center gap-2 mb-3">
+            <Webhook size={15} color="#374151" />
+            <Text className="text-[14px] font-semibold text-[#111827]">أضف Webhook موقعك</Text>
           </View>
-        </View>
-
-        {/* إضافة endpoint */}
-        <View
-          className="bg-white border border-[#E5E7EB] rounded-2xl px-5 py-4"
-          style={{ borderCurve: 'continuous' }}
-        >
-          <Text className="text-[14px] font-semibold text-[#111827] mb-1">
-            أضف عنوان موقعك لاستقبال الإشعارات
-          </Text>
-          <Text className="text-[12px] text-[#9CA3AF] mb-4 leading-5">
-            أدخل عنوان الـ endpoint في موقعك الذي سيستقبل إشعارات الدفع.
+          <Text className="text-[12px] text-[#9CA3AF] mb-3 leading-5">
+            الرابط يجب أن يكون HTTPS ويستقبل POST requests.
           </Text>
 
-          <Text className="text-[12px] font-medium text-[#374151] mb-1.5">عنوان Webhook موقعك</Text>
+          <Text className="text-[12px] font-medium text-[#374151] mb-1.5">Webhook URL</Text>
           <TextInput
             value={url}
             onChangeText={setUrl}
@@ -207,7 +227,12 @@ export default function WebhookScreen() {
             className="border border-[#E5E7EB] rounded-xl px-4 py-3 text-[13px] text-[#111827] bg-[#F9FAFB] mb-4"
           />
 
-          {error && <Text className="text-[12px] text-red-500 mb-2">{error}</Text>}
+          {error && (
+            <View className="flex-row items-center gap-2 mb-2">
+              <AlertCircle size={13} color="#DC2626" />
+              <Text className="text-[12px] text-red-500 flex-1">{error}</Text>
+            </View>
+          )}
           {success && <Text className="text-[12px] text-green-600 mb-2">✅ {success}</Text>}
 
           <Pressable
@@ -221,7 +246,7 @@ export default function WebhookScreen() {
           </Pressable>
         </View>
 
-        {/* عناوين محفوظة */}
+        {/* Endpoints المضافة */}
         {!loading && endpoints.length > 0 && (
           <View className="gap-2">
             <Text className="text-[12px] font-semibold text-[#9CA3AF] tracking-widest uppercase">
@@ -233,9 +258,21 @@ export default function WebhookScreen() {
                 className="bg-white border border-[#E5E7EB] rounded-2xl px-5 py-4"
                 style={{ borderCurve: 'continuous' }}
               >
-                <View className="flex-row items-center gap-2 mb-1">
+                <View className="flex-row items-center gap-2 mb-1.5">
                   <View className={`w-2 h-2 rounded-full ${ep.status === 'active' ? 'bg-green-500' : 'bg-gray-300'}`} />
                   <Text className="text-[11px] text-[#9CA3AF]">{ep.status === 'active' ? 'فعّال' : 'معطّل'}</Text>
+                  {ep.auth_mode && (
+                    <View className="bg-[#F3F4F6] rounded px-1.5 py-0.5">
+                      <Text className="text-[9px] text-[#6B7280]">{ep.auth_mode}</Text>
+                    </View>
+                  )}
+                  {ep.health_status && (
+                    <View className={`rounded px-1.5 py-0.5 ${ep.health_status === 'healthy' ? 'bg-[#F0FDF4]' : 'bg-[#FEF2F2]'}`}>
+                      <Text className={`text-[9px] font-medium ${ep.health_status === 'healthy' ? 'text-[#15803D]' : 'text-[#DC2626]'}`}>
+                        {ep.health_status}
+                      </Text>
+                    </View>
+                  )}
                 </View>
                 <View className="flex-row items-center gap-2">
                   <Text className="flex-1 text-[12px] font-mono text-[#374151]" numberOfLines={1}>{ep.url}</Text>
@@ -245,41 +282,62 @@ export default function WebhookScreen() {
                       : <Copy size={15} color="#9CA3AF" />}
                   </Pressable>
                 </View>
+                {ep.last_test_at && (
+                  <Text className="text-[11px] text-[#9CA3AF] mt-1.5">آخر اختبار: {formatRelative(ep.last_test_at)}</Text>
+                )}
               </View>
             ))}
           </View>
         )}
 
-        {/* التحقق من التوقيع */}
-        <View
-          className="bg-white border border-[#E5E7EB] rounded-2xl px-5 py-4"
-          style={{ borderCurve: 'continuous' }}
-        >
-          <Text className="text-[13px] font-semibold text-[#111827] mb-1">
-            التحقق من توقيع Webhook (HMAC)
-          </Text>
-          <Text className="text-[12px] text-[#6B7280] mb-3 leading-5">
-            كل طلب Webhook يحمل توقيعاً في header. تحقق منه لضمان أن الإشعار حقيقي وليس مزيفاً.
-          </Text>
-
-          <View
-            className="bg-[#F8F9FB] border border-[#E5E7EB] rounded-xl px-4 py-3 mb-3"
-          >
-            <Text className="text-[11px] text-[#6B7280] mb-1">Header التوقيع:</Text>
-            <Text className="text-[12px] font-mono text-[#374151]">
-              X-NaderPay-Signature: sha256=HASH
+        {/* سجلات التسليم */}
+        {deliveries.length > 0 && (
+          <View className="gap-2">
+            <Text className="text-[12px] font-semibold text-[#9CA3AF] tracking-widest uppercase">
+              سجل التسليم الأخير
             </Text>
+            <View className="bg-white border border-[#E5E7EB] rounded-2xl overflow-hidden" style={{ borderCurve: 'continuous' }}>
+              {deliveries.slice(0, 8).map((d, i) => (
+                <View
+                  key={d.id}
+                  className={`flex-row items-center gap-3 px-5 py-3 ${i > 0 ? 'border-t border-[#F3F4F6]' : ''}`}
+                >
+                  {deliveryStatusIcon(d.status)}
+                  <View className="flex-1">
+                    <Text className="text-[12px] font-medium text-[#374151]">
+                      {d.event_type ?? 'webhook.event'}
+                    </Text>
+                    <Text className="text-[11px] text-[#9CA3AF]">
+                      {d.attempts > 1 ? `${d.attempts} محاولات · ` : ''}{formatRelative(d.created_at)}
+                    </Text>
+                  </View>
+                  {d.http_status && (
+                    <View className={`rounded-lg px-2 py-1 ${d.http_status === 200 ? 'bg-[#F0FDF4]' : 'bg-[#FEF2F2]'}`}>
+                      <Text className={`text-[10px] font-bold ${d.http_status === 200 ? 'text-[#15803D]' : 'text-[#DC2626]'}`}>
+                        {d.http_status}
+                      </Text>
+                    </View>
+                  )}
+                </View>
+              ))}
+            </View>
           </View>
+        )}
 
-          <Text className="text-[12px] text-[#374151] mb-1 font-medium">خوارزمية التحقق:</Text>
+        {/* التحقق من التوقيع */}
+        <View className="bg-white border border-[#E5E7EB] rounded-2xl px-5 py-4" style={{ borderCurve: 'continuous' }}>
+          <Text className="text-[13px] font-semibold text-[#111827] mb-1">التحقق من توقيع HMAC</Text>
+          <Text className="text-[12px] text-[#6B7280] mb-3 leading-5">
+            كل طلب Webhook يحمل توقيع HMAC-SHA256 في header. تحقق منه لضمان أن المُرسِل هو NaderPay.
+          </Text>
           <CodeBlock code={`HMAC-SHA256(webhook_secret, raw_request_body)
-= expected_signature
+→ sha256=EXPECTED_HASH
 
-// قارن expected_signature مع X-NaderPay-Signature`} />
-
+// قارن مع: X-NaderPay-Signature
+// استخدم timingSafeEqual لمقارنة آمنة`} />
           <View className="mt-3 bg-[#FFFBEB] border border-[#FDE68A] rounded-xl px-4 py-3">
             <Text className="text-[12px] text-[#92400E] leading-5">
-              ⚠️ استخدم <Text className="font-semibold">Raw Body</Text> (بدون JSON.parse) عند حساب التوقيع. أي تعديل على الـ body يُبطل التحقق.
+              ⚠️ استخدم <Text className="font-bold">Raw Body</Text> (Buffer) بدون JSON.parse. أي تعديل على الـ body يُبطل التوقيع.
             </Text>
           </View>
         </View>
@@ -287,3 +345,4 @@ export default function WebhookScreen() {
     </View>
   );
 }
+

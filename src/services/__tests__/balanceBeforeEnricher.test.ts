@@ -1,3 +1,4 @@
+/* eslint-disable no-undef */
 /**
  * balanceBeforeEnricher.test.ts
  * ══════════════════════════════════════════════════════════════════

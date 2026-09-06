@@ -1,3 +1,4 @@
+/* eslint-disable no-undef */
 // stub بسيط لـ expo-constants في بيئة Node/Jest
 module.exports = {
   default: {

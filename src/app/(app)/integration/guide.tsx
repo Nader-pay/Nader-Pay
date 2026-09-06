@@ -1,4 +1,4 @@
-// دليل التكامل التفاعلي — 5 خطوات مع أكواد قابلة للنسخ
+// دليل التكامل التفاعلي — API Contract الحقيقي
 import { View, Text, ScrollView, Pressable } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useState } from 'react';
@@ -7,6 +7,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Clipboard from 'expo-clipboard';
 
 const BASE_URL = `${process.env.EXPO_PUBLIC_SUPABASE_URL ?? 'https://YOUR_PROJECT.supabase.co'}/functions/v1`;
+const PR_URL = `${BASE_URL}/payment-requests`;
 
 type Step = {
   id: number;
@@ -50,18 +51,39 @@ export default function GuideScreen() {
   const steps: Step[] = [
     {
       id: 1,
-      title: 'Base URL',
-      subtitle: 'عنوان API الرئيسي',
+      title: 'Base URL والإعداد',
+      subtitle: 'عنوان API الحقيقي + متغيرات البيئة',
       content: (
         <View className="gap-2">
           <Text className="text-[13px] text-[#374151] leading-6">
-            كل الطلبات تُرسل إلى هذا العنوان الأساسي. احفظه في متغيرات البيئة الخاصة بموقعك.
+            كل الطلبات تُرسل إلى هذا العنوان. احفظه مع API Key في متغيرات البيئة (ENV) في Backend موقعك.
           </Text>
           <CodeBlock
             copyKey="baseurl"
-            code={`NADERPAY_BASE_URL="${BASE_URL}"`}
+            code={`# متغيرات البيئة في Backend موقعك
+NADERPAY_BASE_URL="${BASE_URL}"
+NADERPAY_API_KEY="KEY_ID:SECRET"
+NADERPAY_WEBHOOK_SECRET="whsec_..."`}
           />
-          <Note text="لا تضع هذا العنوان مباشرةً في كود JavaScript للمتصفح — ضعه في Backend أو .env" />
+          <View className="bg-[#F8F9FB] border border-[#E5E7EB] rounded-xl px-4 py-3 gap-2 mt-1">
+            <Text className="text-[12px] font-semibold text-[#374151]">Endpoints الرئيسية:</Text>
+            {[
+              { method: 'POST', path: '/payment-requests', desc: 'إنشاء طلب دفع جديد' },
+              { method: 'GET',  path: '/payment-requests', desc: 'قائمة طلبات الدفع' },
+              { method: 'GET',  path: '/payment-requests/{id}', desc: 'حالة طلب محدد' },
+              { method: 'POST', path: '/payment-requests/{id}/cancel', desc: 'إلغاء طلب' },
+              { method: 'POST', path: '/payment-requests/{id}/status', desc: 'تحديث الحالة' },
+            ].map(({ method, path, desc }) => (
+              <View key={path} className="flex-row items-center gap-2">
+                <View className={`rounded px-1.5 py-0.5 ${method === 'POST' ? 'bg-[#EEF2FF]' : 'bg-[#F0FDF4]'}`}>
+                  <Text className={`text-[9px] font-bold ${method === 'POST' ? 'text-[#4338CA]' : 'text-[#15803D]'}`}>{method}</Text>
+                </View>
+                <Text className="text-[10px] font-mono text-[#374151] flex-1">{path}</Text>
+                <Text className="text-[10px] text-[#9CA3AF]">{desc}</Text>
+              </View>
+            ))}
+          </View>
+          <Note text="لا تضع API Key في كود Frontend المتصفح. الطريقة الصحيحة: موقعك → Backend → NaderPay API" />
         </View>
       ),
     },
@@ -111,41 +133,41 @@ $headers = [
     {
       id: 3,
       title: 'إنشاء طلب دفع',
-      subtitle: 'POST /payment-requests',
+      subtitle: 'POST /payment-requests — الحقول الحقيقية',
       content: (
         <View className="gap-2">
           <Text className="text-[13px] text-[#374151] leading-6">
-            أرسل طلب POST لإنشاء طلب دفع جديد. يجب تضمين الحقول المطلوبة:
+            الحقول المطلوبة مستخرجة مباشرة من <Text className="font-bold">validateRequestBody</Text> في محرّك التحقق:
           </Text>
 
           {/* جدول الحقول */}
           <View className="border border-[#E5E7EB] rounded-xl overflow-hidden">
             <View className="bg-[#F8F9FB] px-4 py-2.5 flex-row border-b border-[#E5E7EB]">
               <Text className="text-[11px] font-semibold text-[#6B7280] w-32">الحقل</Text>
-              <Text className="text-[11px] font-semibold text-[#6B7280] w-16">النوع</Text>
+              <Text className="text-[11px] font-semibold text-[#6B7280] w-12">إلزامي</Text>
               <Text className="text-[11px] font-semibold text-[#6B7280] flex-1">الوصف</Text>
             </View>
             {[
-              { field: 'external_reference', type: 'string', required: true, desc: 'رقم الطلب في موقعك' },
-              { field: 'amount', type: 'number', required: true, desc: 'المبلغ (موجب)' },
-              { field: 'currency', type: 'string', required: true, desc: 'العملة (مثال: EGP)' },
-              { field: 'destination.wallet_number', type: 'string', required: false, desc: 'رقم المحفظة المستقبِلة' },
-              { field: 'destination.provider', type: 'string', required: false, desc: 'instapay / vodafone' },
-              { field: 'customer.name', type: 'string', required: false, desc: 'اسم العميل' },
-              { field: 'customer.phone', type: 'string', required: false, desc: 'رقم هاتف العميل' },
-              { field: 'expires_at', type: 'ISO date', required: false, desc: 'انتهاء صلاحية الطلب' },
+              { field: 'external_reference', required: true,  desc: 'رقم الطلب في موقعك (فريد)' },
+              { field: 'amount',             required: true,  desc: 'المبلغ (رقم موجب)' },
+              { field: 'currency',           required: true,  desc: 'العملة (EGP, USD…)' },
+              { field: 'destination',        required: false, desc: 'wallet_number + provider' },
+              { field: 'customer',           required: false, desc: 'name + phone للمشتري' },
+              { field: 'verification',       required: false, desc: 'expected_message أو transaction_id' },
+              { field: 'expires_at',         required: false, desc: 'ISO8601 — افتراضي 24 ساعة' },
+              { field: 'order_reference',    required: false, desc: 'مرجع إضافي اختياري' },
+              { field: 'metadata',           required: false, desc: 'بيانات حرة JSON' },
             ].map((row, i) => (
               <View
                 key={row.field}
                 className={`px-4 py-2.5 flex-row items-start ${i % 2 === 0 ? 'bg-white' : 'bg-[#FAFAFA]'}`}
               >
-                <View className="w-32 flex-row gap-1 items-center flex-wrap">
-                  <Text className="text-[10px] font-mono text-[#374151]">{row.field}</Text>
-                  {row.required && (
-                    <Text className="text-[10px] text-red-500 font-bold">*</Text>
-                  )}
+                <Text className="text-[10px] font-mono text-[#374151] w-32">{row.field}</Text>
+                <View className="w-12 items-center">
+                  {row.required
+                    ? <View className="bg-[#FEE2E2] rounded px-1.5 py-0.5"><Text className="text-[9px] font-bold text-[#DC2626]">نعم</Text></View>
+                    : <Text className="text-[10px] text-[#9CA3AF]">—</Text>}
                 </View>
-                <Text className="text-[10px] text-[#9CA3AF] w-16 font-mono">{row.type}</Text>
                 <Text className="text-[11px] text-[#6B7280] flex-1 leading-4">{row.desc}</Text>
               </View>
             ))}
@@ -160,7 +182,9 @@ const response = await fetch(
     method: "POST",
     headers: {
       "x-api-key": process.env.NADERPAY_API_KEY,
-      "Content-Type": "application/json"
+      "Content-Type": "application/json",
+      // لمنع الإرسال المزدوج (Idempotency):
+      "x-idempotency-key": "ORDER-001-attempt-1"
     },
     body: JSON.stringify({
       external_reference: "ORDER-001",
@@ -176,16 +200,18 @@ const response = await fetch(
       },
       expires_at: new Date(
         Date.now() + 30 * 60 * 1000
-      ).toISOString()
+      ).toISOString(),
+      metadata: { order_type: "product", source: "website" }
     })
   }
 );
 
+// 201 Created = نجاح
+// 409 Conflict = external_reference مكرر
 const data = await response.json();
-console.log(data.payment_request_id); // احفظ هذا`}
+// احفظ: data.payment_request_id`}
           />
 
-          {/* استجابة ناجحة */}
           <Text className="text-[12px] font-semibold text-[#374151] mt-2">الاستجابة الناجحة (201):</Text>
           <CodeBlock
             copyKey="response"
@@ -195,124 +221,136 @@ console.log(data.payment_request_id); // احفظ هذا`}
   "amount": 150.00,
   "currency": "EGP",
   "external_reference": "ORDER-001",
-  "created_at": "2024-01-01T12:00:00Z",
-  "expires_at": "2024-01-01T12:30:00Z"
+  "created_at": "2025-01-01T12:00:00Z",
+  "expires_at": "2025-01-01T12:30:00Z"
 }`}
           />
-          <Note text='احفظ payment_request_id لاستخدامه في استعلام الحالة والـ Webhook.' />
+          <Note text='x-idempotency-key يمنع إنشاء طلبَين متطابقَين عند الإعادة. احفظ payment_request_id في قاعدة بياناتك.' />
         </View>
       ),
     },
     {
       id: 4,
-      title: 'استعلام حالة الطلب',
-      subtitle: 'GET /payment-requests/{id}',
+      title: 'حالات الطلب',
+      subtitle: 'CREATED / CONFIRMED / REJECTED / EXPIRED / CANCELLED / DUPLICATE',
       content: (
         <View className="gap-2">
           <Text className="text-[13px] text-[#374151] leading-6">
-            استعلم عن حالة طلب الدفع في أي وقت باستخدام الـ ID الذي حصلت عليه عند الإنشاء.
+            محرّك التحقق يحدّث الحالة تلقائياً عند مطابقة رسالة SMS أو تحويل بنكي.
           </Text>
-          <CodeBlock
-            copyKey="get-status"
-            code={`// استعلام الحالة
-const res = await fetch(
-  \`\${NADERPAY_BASE_URL}/payment-requests/\${paymentRequestId}\`,
-  {
-    headers: {
-      "x-api-key": process.env.NADERPAY_API_KEY
-    }
-  }
-);
-const data = await res.json();
-// data.status: CREATED | CONFIRMED | REJECTED | EXPIRED`}
-          />
 
-          {/* حالات الطلب */}
-          <Text className="text-[12px] font-semibold text-[#374151] mt-2">حالات الطلب الممكنة:</Text>
           <View className="gap-1.5">
             {[
-              { status: 'CREATED', color: '#EEF2FF', text: '#4338CA', desc: 'تم الإنشاء، بانتظار الدفع' },
-              { status: 'CONFIRMED', color: '#DCFCE7', text: '#15803D', desc: 'تم تأكيد الدفع بنجاح' },
-              { status: 'REJECTED', color: '#FEE2E2', text: '#DC2626', desc: 'مرفوض أو غير متطابق' },
-              { status: 'EXPIRED', color: '#F3F4F6', text: '#6B7280', desc: 'انتهت الصلاحية' },
-              { status: 'CANCELLED', color: '#FFF7ED', text: '#EA580C', desc: 'ملغى يدوياً' },
+              { status: 'CREATED',   bg: '#EEF2FF', fg: '#4338CA', desc: 'تم الإنشاء — بانتظار دفع العميل' },
+              { status: 'CONFIRMED', bg: '#DCFCE7', fg: '#15803D', desc: 'الدفع تم وتُحقق منه بنجاح' },
+              { status: 'REJECTED',  bg: '#FEE2E2', fg: '#DC2626', desc: 'لم تتطابق بيانات الدفع' },
+              { status: 'DUPLICATE', bg: '#FEE2E2', fg: '#B91C1C', desc: 'عملية دفع مكررة بنفس المرجع' },
+              { status: 'EXPIRED',   bg: '#F3F4F6', fg: '#6B7280', desc: 'انتهت صلاحية الطلب (24 س افتراضياً)' },
+              { status: 'CANCELLED', bg: '#FFF7ED', fg: '#EA580C', desc: 'ملغى يدوياً عبر API' },
             ].map((s) => (
               <View key={s.status} className="flex-row items-center gap-3 bg-[#FAFAFA] border border-[#E5E7EB] rounded-xl px-3 py-2.5">
-                <View className={`rounded-full px-2.5 py-1`} style={{ backgroundColor: s.color }}>
-                  <Text className="text-[10px] font-bold" style={{ color: s.text }}>{s.status}</Text>
+                <View className="rounded-full px-2.5 py-1" style={{ backgroundColor: s.bg }}>
+                  <Text className="text-[10px] font-bold" style={{ color: s.fg }}>{s.status}</Text>
                 </View>
                 <Text className="text-[12px] text-[#374151] flex-1">{s.desc}</Text>
               </View>
             ))}
           </View>
+
+          <CodeBlock
+            copyKey="get-status"
+            code={`// استعلام حالة طلب محدد
+const res = await fetch(
+  \`\${NADERPAY_BASE_URL}/payment-requests/\${id}\`,
+  { headers: { "x-api-key": process.env.NADERPAY_API_KEY } }
+);
+const { status } = await res.json();
+// CONFIRMED → اعتمد الطلب في قاعدة بياناتك`}
+          />
+
+          <CodeBlock
+            copyKey="cancel"
+            code={`// إلغاء طلب
+await fetch(
+  \`\${NADERPAY_BASE_URL}/payment-requests/\${id}/cancel\`,
+  { method: "POST",
+    headers: { "x-api-key": process.env.NADERPAY_API_KEY } }
+);`}
+          />
         </View>
       ),
     },
     {
       id: 5,
       title: 'Webhook — استقبال التأكيد',
-      subtitle: 'إشعار فوري عند تأكيد الدفع',
+      subtitle: 'HMAC-SHA256 · إعادة محاولة تلقائية',
       content: (
         <View className="gap-2">
           <Text className="text-[13px] text-[#374151] leading-6">
-            سيُرسل التطبيق إشعاراً تلقائياً إلى موقعك فور تأكيد الدفع. أضف endpoint في إعدادات Webhook.
+            NaderPay يرسل POST إلى endpoint موقعك فور تأكيد الدفع، موقّعاً بـ HMAC-SHA256.
+            النظام يعيد المحاولة تلقائياً عند الفشل.
           </Text>
 
-          <Text className="text-[12px] font-semibold text-[#374151] mt-1">Headers التي تصلك:</Text>
+          <Text className="text-[12px] font-semibold text-[#374151] mt-1">Headers الواردة:</Text>
           <CodeBlock
             copyKey="webhook-headers"
             code={`X-NaderPay-Signature: sha256=abc123...
 X-NaderPay-Timestamp: 1700000000
-X-Webhook-Event-Id: evt_uuid`}
+X-Webhook-Event-Id: evt_uuid
+Content-Type: application/json`}
           />
 
-          <Text className="text-[12px] font-semibold text-[#374151] mt-2">التحقق من التوقيع (موصى به):</Text>
+          <Text className="text-[12px] font-semibold text-[#374151] mt-2">التحقق من HMAC (إلزامي في Production):</Text>
           <CodeBlock
             copyKey="webhook-verify"
-            code={`// Node.js — التحقق من HMAC
+            code={`// Node.js / Express
 const crypto = require('crypto');
 
 function verifyWebhook(rawBody, signature, secret) {
   const expected = crypto
     .createHmac('sha256', secret)
-    .update(rawBody)
+    .update(rawBody)          // Raw Buffer — لا JSON.parse!
     .digest('hex');
-  return \`sha256=\${expected}\` === signature;
+  // مقارنة آمنة زمنياً (timing-safe)
+  return crypto.timingSafeEqual(
+    Buffer.from(\`sha256=\${expected}\`),
+    Buffer.from(signature)
+  );
 }
 
-// في Express:
-app.post('/webhook/naderpay', (req, res) => {
-  const sig = req.headers['x-naderpay-signature'];
-  const isValid = verifyWebhook(
-    req.rawBody,       // body خام بدون parse
-    sig,
-    process.env.WEBHOOK_SECRET
-  );
-
-  if (!isValid) {
-    return res.status(401).json({ error: 'Invalid signature' });
+app.post('/webhooks/naderpay',
+  express.raw({ type: 'application/json' }),
+  (req, res) => {
+    const sig = req.headers['x-naderpay-signature'];
+    if (!verifyWebhook(req.body, sig, process.env.NADERPAY_WEBHOOK_SECRET)) {
+      return res.status(401).json({ error: 'Invalid signature' });
+    }
+    const event = JSON.parse(req.body);
+    if (event.event_type === 'payment.confirmed') {
+      // حدّث قاعدة بياناتك هنا
+    }
+    res.json({ received: true }); // أعِد 200 فوراً
   }
-
-  const event = req.body;
-  // event.status === 'CONFIRMED' → حدّث طلبك
-  res.json({ received: true });
-});`}
+);`}
           />
 
-          <Text className="text-[12px] font-semibold text-[#374151] mt-2">مثال على البيانات الواردة:</Text>
+          <Text className="text-[12px] font-semibold text-[#374151] mt-2">البيانات الواردة (payload):</Text>
           <CodeBlock
             copyKey="webhook-body"
             code={`{
-  "event_type": "payment_request.confirmed",
+  "event_type": "payment.confirmed",
   "payment_request_id": "uuid-xxx",
   "external_reference": "ORDER-001",
   "status": "CONFIRMED",
   "amount": 150.00,
   "currency": "EGP",
-  "timestamp": "2024-01-01T12:15:00Z"
-}`}
+  "timestamp": "2025-01-01T12:15:00Z",
+  "metadata": { "order_type": "product" }
+}
+// الأحداث: payment.confirmed | payment.rejected
+//          payment.expired  | payment.duplicate`}
           />
-          <Note text="أعد دائماً HTTP 200 فور استقبال الـ Webhook. المعالجة الثقيلة تكون في background." />
+          <Note text="أعِد HTTP 200 فور استقبال الحدث. المعالجة الثقيلة (بريد، مخزون…) تكون في queue في الخلفية." />
         </View>
       ),
     },

@@ -49,11 +49,6 @@
 - The client is already configured at `src/client/supabase.ts` (with weapp-compatible `customFetch`) — **do not modify**
 - Import directly: `import { supabase } from "@/client/supabase"`
 
-## Persistence
-
-- Use Supabase for ALL persistent data and file storage (DB tables + Storage buckets).
-- Do NOT use localStorage / `Taro.setStorage` or any client-side storage as the source of truth for app data — it does not sync across devices/sessions and is wiped on cache clear. Client-side storage is only for ephemeral UI state (drafts, toggles), never the data store.
-
 ## Directory Conventions
 
 - Place types and query wrappers under `src/db/`
@@ -93,8 +88,35 @@ The scaffold provides the following functions — use them directly:
 - `uploadToSupabase` returns `data.path` (a storage path like `userId/filename.jpg`), **not a URL**. To get a URL, call `supabase.storage.from(bucket).getPublicUrl(data.path).data.publicUrl` (for display, database storage, or API calls)
 - **Keep the full file object (including `name` and `type`) in state** (e.g., `useState<MiniProgramFileInput | File | null>`) — storing only `tempFilePath` will result in the MIME being incorrectly set to `application/octet-stream` during upload
 - Use `upload.ts`'s `selectMediaFiles` for all media selection — it already correctly wraps `Taro.chooseMedia` for cross-platform handling
-- Frontend validation: 1MB limit, snake_case filenames
+- Frontend validation: 1MB limit
+- **Filenames MUST be hex-encoded before upload.** Supabase Storage rejects non-ASCII object keys, so a raw Chinese (or any non-ASCII) filename fails. Hex encoding (UTF-8 bytes → lowercase hex) yields a pure `[0-9a-f]` key, which is always accepted — unlike `encodeURIComponent`, whose `%` escapes get re-encoded/normalized along the request path and break round-tripping. Encode the filename **stem** only; keep the extension so `getMimeType(ext)` and previews still work, and never encode the `/` separators:
+
+```ts
+const toHex = (s: string) =>
+  Array.from(new TextEncoder().encode(s), (b) => b.toString(16).padStart(2, '0')).join('');
+
+const dot = file.name.lastIndexOf('.');
+const stem = dot > 0 ? file.name.slice(0, dot) : file.name;
+const ext = dot > 0 ? file.name.slice(dot) : '';
+const safeName = `${toHex(stem)}${ext}`; // "报表.jpg" -> "e68aa5e8a1a8.jpg"
+```
+
+  The returned `data.path` stays hex-encoded — pass it to `getPublicUrl` as-is. To show the original name, decode the stem with `new TextDecoder().decode(Uint8Array.from(h.match(/../g) ?? [], (x) => parseInt(x, 16)))`, or simply keep the original filename in a DB column.
 - **NEVER** store images/videos as Base64 in database
+
+### Image display — default to thumbnails
+
+Render images through a resized transform, not the full-size original, so lists and grids load fast:
+
+```ts
+const { data } = supabase.storage.from(bucket).getPublicUrl(path, {
+  transform: { width: 400, height: 400, resize: 'cover', quality: 75 },
+});
+```
+
+- Size the transform to the actual rendered box (list row, grid cell, avatar), not the largest possible screen.
+- Request the original only where full resolution is genuinely needed — a detail view or download.
+- Store the plain path or public URL in the database; apply the transform at render time so sizes stay changeable without a data migration.
 
 ## Edge Function Invocation
 

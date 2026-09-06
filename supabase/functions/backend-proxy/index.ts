@@ -75,10 +75,31 @@ serve(async (req: Request) => {
       return jsonResponse(400, { error: 'Missing or invalid url' });
     }
 
-    // Validate URL to prevent accidental internal network calls
+    // Validate URL — block SSRF: private IPs, loopback, link-local, metadata endpoints
     const target = new URL(url);
     if (!['http:', 'https:'].includes(target.protocol)) {
       return jsonResponse(400, { error: 'Only HTTP/HTTPS URLs are allowed' });
+    }
+
+    // Resolve hostname and block private/internal address ranges
+    const hostname = target.hostname.toLowerCase();
+    const BLOCKED_PATTERNS = [
+      /^localhost$/,
+      /^127\./,
+      /^0\.0\.0\.0$/,
+      /^::1$/,
+      /^10\./,
+      /^172\.(1[6-9]|2[0-9]|3[01])\./,
+      /^192\.168\./,
+      /^169\.254\./,          // link-local / AWS metadata
+      /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./,  // CGNAT
+      /^fd[0-9a-f]{2}:/,      // IPv6 ULA
+      /^fe80:/,               // IPv6 link-local
+      /^0\./,                 // 0.x.x.x
+      /^metadata\.google\.internal$/,
+    ];
+    if (BLOCKED_PATTERNS.some(p => p.test(hostname))) {
+      return jsonResponse(403, { error: 'URL targets a private or reserved address' });
     }
 
     // Build final URL with query params

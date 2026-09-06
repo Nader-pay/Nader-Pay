@@ -85,6 +85,19 @@ const uploadFile = async (uri: string, bucket: string, path: string, mimeType: s
 };
 ```
 
+- **`path`'s filename stem MUST be hex-encoded by the caller.** Supabase Storage rejects non-ASCII object keys, so a raw Chinese (or any non-ASCII) filename fails. Hex encoding (UTF-8 bytes → lowercase hex) yields a pure `[0-9a-f]` key, which is always accepted — unlike `encodeURIComponent`, whose `%` escapes get re-encoded/normalized along the request path and break round-tripping. Keep the extension so `contentType` and previews still work, and never encode the `/` separators:
+
+```ts
+const toHex = (s: string) =>
+  Array.from(new TextEncoder().encode(s), (b) => b.toString(16).padStart(2, '0')).join('');
+
+const dot = originalName.lastIndexOf('.');
+const stem = dot > 0 ? originalName.slice(0, dot) : originalName;
+const ext = dot > 0 ? originalName.slice(dot) : '';
+const path = `${userId}/${toHex(stem)}${ext}`; // "报表.jpg" -> "e68aa5e8a1a8.jpg"
+```
+
+  `data.path` comes back still hex-encoded — pass it to `getPublicUrl` as-is. To show the original name, decode the stem with `new TextDecoder().decode(Uint8Array.from(h.match(/../g) ?? [], (x) => parseInt(x, 16)))`, or simply keep the original filename in a DB column.
 - `contentType` correctness (a wrong MIME → **415** rejection):
   - **Images**: compress to JPEG first via `expo-image-manipulator` (see the `mobile-app` skill), then upload with `contentType: "image/jpeg"` — the compressed output is always JPEG.
   - **Other file types**: pass the picker's `asset.mimeType`.
@@ -92,8 +105,22 @@ const uploadFile = async (uri: string, bucket: string, path: string, mimeType: s
 - MUST check `error` and throw `error.message` — never swallow the upload error.
 - Debugging `signature verification failed`: first reproduce with the anon key via `curl` to isolate "wrong token sent" from a missing bucket / RLS / wrong key.
 - Do **not** use `FileReader`, `blob`, or `base64` for uploads
-- Frontend validation: 1MB limit, snake_case filenames
+- Frontend validation: 1MB limit
 - Compress before uploading using `expo-image-manipulator`
+
+### Image display — default to thumbnails
+
+Render images through a resized transform, not the full-size original, so lists and grids load fast:
+
+```tsx
+const { data } = supabase.storage.from(bucket).getPublicUrl(path, {
+  transform: { width: 400, height: 400, resize: 'cover', quality: 75 },
+});
+```
+
+- Size the transform to the actual rendered box (list row, grid cell, avatar), not the largest possible screen.
+- Request the original only where full resolution is genuinely needed — a detail view or download.
+- Store the plain path or public URL in the database; apply the transform at render time so sizes stay changeable without a data migration.
 
 ## Edge Function Invocation
 

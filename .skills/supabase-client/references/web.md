@@ -28,17 +28,45 @@
 
 - Create for image/file uploads only
 - **NEVER** store images/videos as Base64 in database
-- Frontend validation: 1MB limit, snake_case filenames
+- Frontend validation: 1MB limit
+- **Filenames MUST be hex-encoded before upload.** Supabase Storage rejects non-ASCII object keys, so a raw Chinese (or any non-ASCII) filename fails. Hex encoding (UTF-8 bytes → lowercase hex) yields a pure `[0-9a-f]` key, which is always accepted — unlike `encodeURIComponent`, whose `%` escapes are themselves re-encoded/normalized along the request path and break round-tripping. Encode the filename **stem** only; keep the extension so `contentType` and previews still work, and never touch the `/` separators.
 - Web: upload directly using `File` / `Blob`:
 
 ```ts
+const toHex = (s: string) =>
+  Array.from(new TextEncoder().encode(s), (b) => b.toString(16).padStart(2, '0')).join('');
+const fromHex = (h: string) =>
+  new TextDecoder().decode(Uint8Array.from(h.match(/../g) ?? [], (x) => parseInt(x, 16)));
+
+// encode the stem only, NOT the whole path
+const dot = file.name.lastIndexOf('.');
+const stem = dot > 0 ? file.name.slice(0, dot) : file.name;
+const ext = dot > 0 ? file.name.slice(dot) : '';
+const safeName = `${toHex(stem)}${ext}`; // "报表.jpg" -> "e68aa5e8a1a8.jpg"
+
 const { data, error } = await supabase.storage
   .from(bucket)
-  .upload(`${userId}/${snakeCaseName}.jpg`, file, { contentType: file.type });
+  .upload(`${userId}/${safeName}`, file, { contentType: file.type });
 
 const { data: urlData } = supabase.storage.from(bucket).getPublicUrl(data.path);
 // Store urlData.publicUrl in database
 ```
+
+- `data.path` comes back still hex-encoded. Pass it to `getPublicUrl` as-is; use `fromHex` on the stem only when displaying the original name to a user. Keep the original filename in a DB column if you need it for display — decoding is then optional.
+
+### Image display — default to thumbnails
+
+Images MUST be rendered via a resized transform, not the full-size original, so lists and grids load fast. Use the `transform` option on `getPublicUrl`:
+
+```ts
+const { data } = supabase.storage.from(bucket).getPublicUrl(path, {
+  transform: { width: 400, height: 400, resize: 'cover', quality: 75 },
+});
+```
+
+- Size the transform to the actual rendered box (list/grid/avatar), not the largest possible viewport.
+- Request the original only where full resolution is genuinely needed — a detail view or download.
+- Store the plain path or public URL in the database; apply the transform at render time so thumbnail sizes stay changeable without a data migration.
 
 ## Edge Function Invocation
 

@@ -1,3 +1,4 @@
+/* eslint-disable no-undef */
 /**
  * remoteConfigSetup.js
  * يُشغَّل قبل كل test suite (setupFiles).
