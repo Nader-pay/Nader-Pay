@@ -1,13 +1,52 @@
-// شاشة تنزيل ملف التكامل الشامل
-import { View, Text, ScrollView, Pressable, ActivityIndicator } from 'react-native';
+// شاشة تنزيل ملف التكامل الشامل — مع روابط PDF و GitHub مباشرة
+import { View, Text, ScrollView, Pressable, ActivityIndicator, Linking } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useState } from 'react';
-import { FileDown, Copy, CheckCircle2, ChevronLeft, Share2 } from 'lucide-react-native';
+import { FileDown, Copy, CheckCircle2, ChevronLeft, Share2, ExternalLink, FileText } from 'lucide-react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Clipboard from 'expo-clipboard';
 import { cacheDirectory, writeAsStringAsync } from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import { supabase } from '@/client/supabase';
+
+// ─── روابط ثابتة من GitHub Releases ───────────────────────────
+const PDF_URL = 'https://github.com/Nader-pay/Nader-Pay/raw/main/docs/NaderPay_Integration_Guide.pdf';
+const GUIDE_URL = 'https://github.com/Nader-pay/Nader-Pay/blob/main/docs/INTEGRATION_GUIDE.md';
+const APK_URL = 'https://github.com/Nader-pay/Nader-Pay/releases/download/v1.0.191/nader-pay-agent-v1.0.191.apk';
+
+function LinkRow({ icon, label, url, color = '#111827' }: {
+  icon: React.ReactNode; label: string; url: string; color?: string;
+}) {
+  const [copied, setCopied] = useState(false);
+  const handleCopy = async () => {
+    await Clipboard.setStringAsync(url);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+  return (
+    <View className="bg-[#F8F9FB] border border-[#E5E7EB] rounded-xl px-4 py-3 mb-3" style={{ borderCurve: 'continuous' as 'continuous' }}>
+      <View className="flex-row items-center gap-2 mb-2">
+        {icon}
+        <Text className="text-[13px] font-semibold" style={{ color }}>{label}</Text>
+      </View>
+      <View className="bg-white border border-[#E5E7EB] rounded-lg px-3 py-2 flex-row items-center gap-2">
+        <Text className="flex-1 text-[10px] font-mono text-[#374151]" numberOfLines={1}>{url}</Text>
+        <Pressable onPress={handleCopy} className="active:opacity-60">
+          {copied
+            ? <CheckCircle2 size={14} color="#15803D" />
+            : <Copy size={14} color="#9CA3AF" />}
+        </Pressable>
+      </View>
+      <Pressable
+        onPress={() => Linking.openURL(url)}
+        className="mt-2 flex-row items-center gap-1.5 self-start active:opacity-60"
+      >
+        <ExternalLink size={12} color="#4338CA" />
+        <Text className="text-[11px] font-semibold text-[#4338CA]">فتح / تحميل</Text>
+      </Pressable>
+    </View>
+  );
+}
 
 export default function DownloadScreen() {
   const router = useRouter();
@@ -16,6 +55,7 @@ export default function DownloadScreen() {
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [preview, setPreview] = useState<string | null>(null);
+  const [showJson, setShowJson] = useState(false);
 
   const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL ?? 'https://YOUR_PROJECT.supabase.co';
   const baseUrl = `${supabaseUrl}/functions/v1`;
@@ -185,6 +225,7 @@ export default function DownloadScreen() {
     try {
       const content = await buildIntegrationFile();
       setPreview(content);
+      setShowJson(true);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'خطأ في توليد الملف');
     } finally {
@@ -212,10 +253,8 @@ export default function DownloadScreen() {
     try {
       const content = preview ?? await buildIntegrationFile();
       if (!preview) setPreview(content);
-
       const fileUri = `${cacheDirectory ?? ''}naderpay-integration.json`;
       await writeAsStringAsync(fileUri, content);
-
       if (await Sharing.isAvailableAsync()) {
         await Sharing.shareAsync(fileUri, {
           mimeType: 'application/json',
@@ -223,7 +262,6 @@ export default function DownloadScreen() {
           UTI: 'public.json',
         });
       } else {
-        // Web fallback: نسخ للحافظة
         await Clipboard.setStringAsync(content);
         setCopied(true);
         setTimeout(() => setCopied(false), 2500);
@@ -246,8 +284,8 @@ export default function DownloadScreen() {
           <ChevronLeft size={22} color="#111827" />
         </Pressable>
         <View className="flex-1">
-          <Text className="text-[17px] font-bold text-[#111827]">ملف التكامل</Text>
-          <Text className="text-[12px] text-[#9CA3AF]">JSON شامل لإعدادات الربط</Text>
+          <Text className="text-[17px] font-bold text-[#111827]">ملفات التكامل</Text>
+          <Text className="text-[12px] text-[#9CA3AF]">حمّل أو انسخ — كل ما يحتاجه المطوّر</Text>
         </View>
       </View>
 
@@ -255,75 +293,90 @@ export default function DownloadScreen() {
         contentContainerStyle={{ padding: 20, paddingBottom: insets.bottom + 40, gap: 16 }}
         showsVerticalScrollIndicator={false}
       >
-        {/* وصف الملف */}
-        <View
-          className="bg-white border border-[#E5E7EB] rounded-2xl px-5 py-5"
-          style={{ borderCurve: 'continuous' }}
-        >
-          <View className="w-14 h-14 rounded-2xl bg-[#F3F4F6] items-center justify-center mb-4">
-            <FileDown size={28} color="#374151" />
+        {/* ─── قسم التحميل المباشر ─── */}
+        <View className="bg-white border border-[#E5E7EB] rounded-2xl px-5 py-5" style={{ borderCurve: 'continuous' as 'continuous' }}>
+          <Text className="text-[15px] font-bold text-[#111827] mb-1">📥 تحميل مباشر</Text>
+          <Text className="text-[12px] text-[#6B7280] leading-5 mb-4">
+            انسخ الرابط أو اضغط "فتح / تحميل" مباشرة من المتصفح
+          </Text>
+
+          <LinkRow
+            icon={<FileText size={15} color="#DC2626" />}
+            label="دليل التكامل — PDF"
+            url={PDF_URL}
+            color="#DC2626"
+          />
+          <LinkRow
+            icon={<FileDown size={15} color="#1D4ED8" />}
+            label="دليل التكامل — Markdown (GitHub)"
+            url={GUIDE_URL}
+            color="#1D4ED8"
+          />
+          <LinkRow
+            icon={<ExternalLink size={15} color="#059669" />}
+            label="تحميل تطبيق الأندرويد APK v1.0.191"
+            url={APK_URL}
+            color="#059669"
+          />
+        </View>
+
+        {/* ─── ملف JSON ديناميكي ─── */}
+        <View className="bg-white border border-[#E5E7EB] rounded-2xl px-5 py-5" style={{ borderCurve: 'continuous' as 'continuous' }}>
+          <View className="flex-row items-center gap-2 mb-2">
+            <FileDown size={18} color="#374151" />
+            <Text className="text-[15px] font-bold text-[#111827]">ملف JSON الديناميكي</Text>
           </View>
-          <Text className="text-[17px] font-bold text-[#111827] mb-2">
-            naderpay-integration.json
+          <Text className="text-[12px] text-[#6B7280] leading-5 mb-4">
+            يُولَّد تلقائياً بمفتاح API الخاص بك — شاركه مع المطوّر مباشرةً.
           </Text>
-          <Text className="text-[13px] text-[#6B7280] leading-6 mb-4">
-            ملف شامل يحتوي على كل ما يحتاجه المطوّر لربط موقعه بنادر باي:
-          </Text>
-          <View className="gap-2">
+          <View className="gap-2 mb-4">
             {[
               'Base URL و Endpoints الكاملة',
-              'طريقة المصادقة ومفتاح API (إن وجد)',
+              'مفتاح API (KEY_ID) مدمج تلقائياً',
               'مثال كامل لإنشاء طلب دفع',
-              'إعدادات Webhook والتحقق من التوقيع',
-              'جميع حالات الطلبات وأكواد الأخطاء',
-              'خطوات البدء السريع (8 خطوات)',
+              'إعدادات Webhook + التحقق HMAC',
+              'أكواد الأخطاء وحالات الطلبات',
             ].map((item, i) => (
-              <View key={i} className="flex-row items-center gap-2.5">
-                <CheckCircle2 size={14} color="#15803D" />
-                <Text className="text-[13px] text-[#374151]">{item}</Text>
+              <View key={i} className="flex-row items-center gap-2">
+                <CheckCircle2 size={13} color="#15803D" />
+                <Text className="text-[12px] text-[#374151]">{item}</Text>
               </View>
             ))}
           </View>
-        </View>
 
-        {/* أزرار الإجراءات */}
-        <View className="gap-3">
+          {/* أزرار JSON */}
           <Pressable
             onPress={handleShare}
             disabled={loading}
-            className="bg-[#111827] rounded-2xl py-4 flex-row items-center justify-center gap-2.5 active:opacity-70"
-            style={{ borderCurve: 'continuous' }}
+            className="bg-[#111827] rounded-xl py-3.5 flex-row items-center justify-center gap-2 active:opacity-70 mb-2"
           >
             {loading
               ? <ActivityIndicator size="small" color="#fff" />
-              : <Share2 size={18} color="#fff" />}
-            <Text className="text-[15px] font-semibold text-white">
-              {loading ? 'جاري التوليد…' : 'تصدير / مشاركة الملف'}
+              : <Share2 size={16} color="#fff" />}
+            <Text className="text-[13px] font-semibold text-white">
+              {loading ? 'جاري التوليد…' : 'تصدير / مشاركة JSON'}
             </Text>
           </Pressable>
 
-          <View className="flex-row gap-3">
+          <View className="flex-row gap-2">
             <Pressable
               onPress={handleCopy}
               disabled={loading}
-              className="flex-1 border border-[#E5E7EB] bg-white rounded-2xl py-3.5 flex-row items-center justify-center gap-2 active:opacity-70"
-              style={{ borderCurve: 'continuous' }}
+              className="flex-1 border border-[#E5E7EB] bg-[#F8F9FB] rounded-xl py-3 flex-row items-center justify-center gap-1.5 active:opacity-70"
             >
-              {copied
-                ? <CheckCircle2 size={16} color="#15803D" />
-                : <Copy size={16} color="#374151" />}
-              <Text className={`text-[13px] font-semibold ${copied ? 'text-green-700' : 'text-[#374151]'}`}>
+              {copied ? <CheckCircle2 size={14} color="#15803D" /> : <Copy size={14} color="#374151" />}
+              <Text className={`text-[12px] font-semibold ${copied ? 'text-green-700' : 'text-[#374151]'}`}>
                 {copied ? 'تم النسخ!' : 'نسخ JSON'}
               </Text>
             </Pressable>
-
             <Pressable
               onPress={handlePreview}
               disabled={loading}
-              className="flex-1 border border-[#E5E7EB] bg-white rounded-2xl py-3.5 items-center justify-center active:opacity-70"
-              style={{ borderCurve: 'continuous' }}
+              className="flex-1 border border-[#E5E7EB] bg-[#F8F9FB] rounded-xl py-3 items-center justify-center active:opacity-70"
             >
-              <Text className="text-[13px] font-semibold text-[#374151]">معاينة</Text>
+              <Text className="text-[12px] font-semibold text-[#374151]">
+                {showJson ? 'إخفاء المعاينة' : 'معاينة'}
+              </Text>
             </Pressable>
           </View>
         </View>
@@ -334,18 +387,13 @@ export default function DownloadScreen() {
           </View>
         )}
 
-        {/* معاينة الملف */}
-        {preview && (
-          <View
-            className="bg-[#0F172A] rounded-2xl overflow-hidden"
-            style={{ borderCurve: 'continuous' }}
-          >
+        {/* معاينة JSON */}
+        {showJson && preview && (
+          <View className="bg-[#0F172A] rounded-2xl overflow-hidden" style={{ borderCurve: 'continuous' as 'continuous' }}>
             <View className="px-4 py-3 border-b border-[#1E293B] flex-row items-center justify-between">
               <Text className="text-[11px] font-mono text-[#64748B]">naderpay-integration.json</Text>
               <Pressable onPress={handleCopy} className="active:opacity-60 flex-row items-center gap-1">
-                {copied
-                  ? <CheckCircle2 size={13} color="#4ADE80" />
-                  : <Copy size={13} color="#64748B" />}
+                {copied ? <CheckCircle2 size={13} color="#4ADE80" /> : <Copy size={13} color="#64748B" />}
                 <Text className="text-[10px] text-[#64748B] ml-1">{copied ? 'تم' : 'نسخ'}</Text>
               </Pressable>
             </View>
@@ -355,34 +403,11 @@ export default function DownloadScreen() {
                 style={{ padding: 16, minWidth: 340 }}
                 numberOfLines={60}
               >
-                {preview.slice(0, 3000)}{preview.length > 3000 ? '\n\n// … (اضغط "تصدير" لمشاركة الملف كاملاً)' : ''}
+                {preview.slice(0, 3000)}{preview.length > 3000 ? '\n\n// … (اضغط "تصدير" للملف الكامل)' : ''}
               </Text>
             </ScrollView>
           </View>
         )}
-
-        {/* تعليمات الاستخدام */}
-        <View
-          className="bg-white border border-[#E5E7EB] rounded-2xl px-5 py-4"
-          style={{ borderCurve: 'continuous' }}
-        >
-          <Text className="text-[13px] font-semibold text-[#111827] mb-3">
-            كيف تستخدم هذا الملف؟
-          </Text>
-          {[
-            { step: '1', text: 'شارك الملف مع المطوّر المسؤول عن الموقع' },
-            { step: '2', text: 'المطوّر يحفظ API Key في متغيرات البيئة' },
-            { step: '3', text: 'يستخدم Endpoints الموثّقة في الملف لإرسال طلبات الدفع' },
-            { step: '4', text: 'يضيف Webhook endpoint لاستقبال إشعارات الدفع' },
-          ].map((item) => (
-            <View key={item.step} className="flex-row items-start gap-3 py-2">
-              <View className="w-6 h-6 rounded-full bg-[#F3F4F6] items-center justify-center mt-0.5">
-                <Text className="text-[11px] font-bold text-[#374151]">{item.step}</Text>
-              </View>
-              <Text className="flex-1 text-[13px] text-[#374151] leading-5">{item.text}</Text>
-            </View>
-          ))}
-        </View>
       </ScrollView>
     </View>
   );

@@ -1,4 +1,4 @@
-// لوحة تحكم التكامل — Integration Overview الحقيقية
+// لوحة تحكم التكامل — Integration Overview مُبسَّطة
 import { ScrollView, View, Text, Pressable, ActivityIndicator, RefreshControl } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useCallback, useState } from 'react';
@@ -6,7 +6,7 @@ import { useFocusEffect } from 'expo-router';
 import {
   Key, Webhook, BookOpen, FileDown, Code2, ChevronRight,
   Plus, Globe, Activity, Zap, AlertCircle, CheckCircle2,
-  Clock, RefreshCw, FlaskConical,
+  Clock, RefreshCw, FlaskConical, Rocket, ArrowRight,
 } from 'lucide-react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { supabase } from '@/client/supabase';
@@ -111,6 +111,36 @@ function statusLabel(s: string) {
   return m[s] ?? s;
 }
 
+// ─── Quick Connect Banner ────────────────────────────────────
+function QuickConnectBanner({ onPress }: { onPress: () => void }) {
+  return (
+    <Pressable
+      onPress={onPress}
+      className="mx-6 mb-5 active:opacity-70"
+    >
+      <View
+        className="bg-[#111827] rounded-2xl px-5 py-5"
+        style={{ borderCurve: 'continuous' }}
+      >
+        <View className="flex-row items-center gap-2 mb-2">
+          <Rocket size={16} color="#FCD34D" />
+          <Text className="text-[12px] font-semibold text-[#FCD34D] tracking-wide uppercase">ربط سريع</Text>
+        </View>
+        <Text className="text-[18px] font-bold text-white mb-1 leading-6">
+          اربط موقعك في دقيقتين
+        </Text>
+        <Text className="text-[13px] text-[#9CA3AF] leading-5 mb-4">
+          أدخل اسم موقعك ورابط الـ Webhook — وسنولّد لك كل الكود جاهزاً تلقائياً.
+        </Text>
+        <View className="flex-row items-center gap-2 bg-white/10 self-start rounded-xl px-4 py-2">
+          <Text className="text-[13px] font-semibold text-white">ابدأ الآن</Text>
+          <ArrowRight size={14} color="#fff" />
+        </View>
+      </View>
+    </Pressable>
+  );
+}
+
 // ─── الشاشة الرئيسية ──────────────────────────────────────────
 export default function IntegrationScreen() {
   const router = useRouter();
@@ -200,6 +230,9 @@ export default function IntegrationScreen() {
         </View>
       ) : (
         <>
+          {/* ─── Quick Connect Banner (دائماً ظاهر) ─── */}
+          <QuickConnectBanner onPress={() => router.push('/(app)/integration/create' as never)} />
+
           {/* ─── إحصائيات سريعة ─── */}
           {summary && (
             <View className="px-6 mb-5">

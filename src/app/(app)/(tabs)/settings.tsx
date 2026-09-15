@@ -202,7 +202,10 @@ export default function SettingsScreen() {
             >
               <View className="flex-row items-center gap-3">
                 <Server size={18} className="text-foreground" />
-                <Text className="text-sm text-foreground">خوادم الدفع</Text>
+                <View>
+                  <Text className="text-sm text-foreground">خوادم الدفع</Text>
+                  <Text className="text-xs text-muted-foreground">إعدادات متقدمة</Text>
+                </View>
               </View>
               <ChevronLeft size={18} color="#9ca3af" />
             </Pressable>
