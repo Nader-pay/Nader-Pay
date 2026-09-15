@@ -86,18 +86,22 @@ export default function WebhookScreen() {
 
       // جلب endpoints + deliveries بالتوازي
       const [epRes, statsRes] = await Promise.all([
-        fetch(`${supabaseUrl}/functions/v1/naderpay-admin/webhook-endpoints`, { headers }),
+        fetch(`${supabaseUrl}/functions/v1/integration-status`, { headers }),
         fetch(`${supabaseUrl}/functions/v1/integration-status`, { headers }),
       ]);
 
       if (epRes.ok) {
         const json = await epRes.json();
-        setEndpoints(json.endpoints ?? []);
+        // استخرج webhook_endpoints من integrations
+        const eps: WebhookEndpoint[] = [];
+        const integrations: Array<{ webhook_endpoints?: WebhookEndpoint[] }> = json.integrations ?? [];
+        integrations.forEach((i) => {
+          if (Array.isArray(i.webhook_endpoints)) eps.push(...i.webhook_endpoints);
+        });
+        setEndpoints(eps);
       }
       if (statsRes.ok) {
         const json = await statsRes.json();
-        // نستخرج webhook_deliveries من integration-status
-        // webhook_deliveries قد تأتي ضمن integrations أو منفصلة
         const allDeliveries: WebhookDelivery[] = [];
         const integrations: Array<{ webhook_deliveries?: WebhookDelivery[] }> = json.integrations ?? [];
         integrations.forEach((i) => {
@@ -125,14 +129,14 @@ export default function WebhookScreen() {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) throw new Error('يجب تسجيل الدخول');
 
-      const res = await fetch(`${supabaseUrl}/functions/v1/naderpay-admin/webhook-endpoints`, {
+      const res = await fetch(`${supabaseUrl}/functions/v1/integrations`, {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${session.access_token}`,
           apikey: process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY!,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ url: url.trim() }),
+        body: JSON.stringify({ action: 'update-webhook', url: url.trim() }),
       });
       if (res.ok) {
         setSuccess('تم إضافة Webhook بنجاح');

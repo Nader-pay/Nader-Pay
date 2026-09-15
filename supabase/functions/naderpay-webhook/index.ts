@@ -67,6 +67,7 @@ async function getEndpointSecrets(
 }
 
 Deno.serve(async (req: Request) => {
+  // CORS preflight — يجب أن يكون أول شيء قبل أي معالجة
   if (req.method === 'OPTIONS') return new Response(null, { headers: CORS });
 
   const requestId = crypto.randomUUID();
@@ -78,8 +79,6 @@ Deno.serve(async (req: Request) => {
   }
 
   // 1. API credential via x-api-key or X-Webhook-Authorization header
-  // The Edge Function runtime reserves Authorization for JWT auth, so the dispatcher
-  // sends the API credential in X-Webhook-Authorization: Bearer <key_id>:<secret>
   let apiKey = getHeader(req, 'x-api-key');
   if (!apiKey) {
     const webhookAuth = getHeader(req, 'X-Webhook-Authorization') ?? getHeader(req, 'x-webhook-authorization');
@@ -87,8 +86,19 @@ Deno.serve(async (req: Request) => {
       apiKey = webhookAuth.slice(7).trim();
     }
   }
+  // دعم Authorization: Bearer key_id:secret (من موقع nader-ai.com)
   if (!apiKey) {
-    return jsonErr('UNAUTHORIZED_NO_AUTH_HEADER', 'مطلوب x-api-key أو X-Webhook-Authorization', 401, requestId);
+    const authHeader = getHeader(req, 'Authorization') ?? getHeader(req, 'authorization');
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      const candidate = authHeader.slice(7).trim();
+      // تحقق أنه API key وليس JWT (JWT يحتوي على نقطتين كـ header.payload.signature)
+      if (candidate.startsWith('pk_') || (candidate.includes(':') && candidate.split('.').length !== 3)) {
+        apiKey = candidate;
+      }
+    }
+  }
+  if (!apiKey) {
+    return jsonErr('UNAUTHORIZED_NO_AUTH_HEADER', 'مطلوب x-api-key', 401, requestId);
   }
 
   // Set the header expected by the shared auth helper
@@ -101,6 +111,29 @@ Deno.serve(async (req: Request) => {
     return jsonErr('INVALID_API_CREDENTIAL', 'بيانات API credential غير صالحة', 401, requestId);
   }
   const { account_id, credential_id, key_id } = auth;
+
+  // Test mode — طلبات الاختبار من موقع المطوّر (X-Webhook-Test: true)
+  const isTestMode = getHeader(req, 'X-Webhook-Test') === 'true'
+    || getHeader(req, 'x-webhook-test') === 'true';
+
+  if (isTestMode) {
+    // رد فوري بتأكيد الاتصال بدون معالجة كاملة
+    await logSecurityEvent(db, {
+      account_id,
+      event_type: 'webhook.test_ping',
+      severity: 'info',
+      actor: `api:${credential_id}`,
+      details: { key_id, test_mode: true },
+    });
+    return jsonOk({
+      received: true,
+      test: true,
+      message: 'اتصال ناجح — NaderPay Webhook جاهز لاستقبال الأحداث',
+      endpoint: ENDPOINT_PATH,
+      timestamp: new Date().toISOString(),
+      auth_verified: true,
+    });
+  }
 
   const eventId = getHeader(req, 'X-Webhook-Event-Id');
   const timestamp = getHeader(req, 'X-Webhook-Timestamp');
@@ -137,7 +170,7 @@ Deno.serve(async (req: Request) => {
     return jsonErr('EVENT_REPLAYED', 'تم استقبال هذا الحدث من قبل', 409, requestId);
   }
 
-  // 5. Signature verification (required when account has HMAC webhook secrets)
+  // 5. Signature verification
   const webhookSecrets = await getActiveWebhookSecrets(db, account_id);
   const endpointSecrets = await getEndpointSecrets(db, account_id);
   const allSecrets = [...new Set([...webhookSecrets, ...endpointSecrets])];
