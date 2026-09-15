@@ -3,7 +3,7 @@
     "name": "تطبيق خاص ",
     "slug": "nader-pay-agent",
     "scheme": "appdz8miw66l2wx",
-    "version": "1.0.189",
+    "version": "1.0.191",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
@@ -18,7 +18,7 @@
         "backgroundColor": "#ffffff"
       },
       "predictiveBackGestureEnabled": false,
-      "versionCode": 88,
+      "versionCode": 89,
       "package": "com.miaoda.appdz8miw66l2wx",
       "permissions": [
         "android.permission.INTERNET",
