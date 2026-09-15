@@ -1,155 +1,181 @@
-# دليل التكامل الشامل لنظام نادر باي (NaderPay Integration Guide)
+# دليل تكامل NaderPay للمطوّرين (Integration Guide)
 
-دليل كامل لأصحاب المواقع والمطورين لربط أي موقع إلكتروني أو تطبيق بنظام نادر باي لإدارة المدفوعات والتحقق التلقائي من المعاملات.
-
----
-
-## 1. نظرة عامة (Overview)
-نظام **نادر باي (NaderPay)** يتيح لموقعك:
-1. إنشاء طلبات دفع برمز معاملة فريد (`reference_id`).
-2. ربط محافظ فودافون كاش، أورنج كاش، إتصالات كاش، إنستاباي.
-3. قراءة وتأكيد الرسائل البنكية تلقائياً عبر تطبيق الأندرويد.
-4. إرسال Webhook تلقائي وفوري لموقعك عند تأكيد الدفع مع توقيع أمني HMAC-SHA256.
+> هذا الدليل يشرح كيفية ربط موقعك الخارجي أو متجرك ببوابة الدفع **NaderPay** عبر الـ API والـ Webhook بشكل صحيح لتجنب أخطاء الاتصال و CORS.
 
 ---
 
-## 2. الإعدادات الأساسية (Base Configuration)
-- **رابط الـ API الأساسي (Edge Functions):**
-  `https://hbldhnpduoczneoyfzyz.supabase.co/functions/v1`
-- **الترويسات الإلزامية (Required Headers):**
-  - `Content-Type: application/json`
-  - `x-api-key: YOUR_MERCHANT_API_KEY` (أو Bearer token)
+## 1. بيانات الاتصال الأساسية (Endpoints & Credentials)
+
+| البيان | القيمة |
+|---|---|
+| **Base URL** | `https://hbldhnpduoczneoyfzyz.supabase.co/functions/v1` |
+| **Webhook Endpoint** | `https://hbldhnpduoczneoyfzyz.supabase.co/functions/v1/naderpay-webhook` |
+| **Create Request Endpoint** | `https://hbldhnpduoczneoyfzyz.supabase.co/functions/v1/integrations/requests` |
+| **طريقة المصادقة** | Header: `x-api-key: pk_XXXXX:secret_XXXXX` |
+| **نوع المحتوى** | `Content-Type: application/json` |
 
 ---
 
-## 3. إنشاء طلب دفع (Create Payment Request)
-- **Endpoint:** `POST /create-payment-request`
+## 2. سبب خطأ `Failed to fetch` في اختبار الاتصال وكيفية حله
 
-### جسم الطلب (Request Body):
-```json
-{
-  "amount": 150.00,
-  "currency": "EGP",
-  "method": "vodafone_cash",
-  "order_id": "ORD-98231",
-  "customer_phone": "01012345678",
-  "webhook_url": "https://your-website.com/api/naderpay-webhook",
-  "redirect_url": "https://your-website.com/checkout/success"
-}
+### سبب المشكلة:
+عند فحص الاتصال من لوحة تحكم الموقع عبر المتصفح (Browser Fetch)، السيرفر يتطلب وجود Header مخصص للاختبار. بدون هذا الـ Header يرفض السيرفر الطلب بدون إرجاع ترويسات CORS المسموحة للمتصفح، فيظهر الخطأ كـ `Failed to fetch`.
+
+### الحل:
+إضافة الـ Header التالي في طلب فحص الاتصال:
+```http
+X-Webhook-Test: true
 ```
 
-### الاستجابة الناجحة (Success Response - 200 OK):
-```json
-{
-  "status": "success",
-  "data": {
-    "payment_id": "pay_98231a4f",
-    "reference_id": "NP-8831",
-    "amount": 150.00,
-    "target_wallet": "01099887766",
-    "checkout_url": "https://naderpay.com/pay/pay_98231a4f",
-    "expires_at": "2026-09-15T20:30:00Z"
+---
+
+## 3. كود اختبار الاتصال الصحيح (JavaScript / Frontend)
+
+```javascript
+// دالة فحص الاتصال من لوحة تحكم موقعك
+async function testNaderPayConnection(apiKey) {
+  try {
+    const response = await fetch('https://hbldhnpduoczneoyfzyz.supabase.co/functions/v1/naderpay-webhook', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,          // الصيغة: pk_XXXXX:secret_XXXXX
+        'X-Webhook-Test': 'true'       // ← ضروري جداً لاجتياز اختبار الاتصال و CORS
+      },
+      body: JSON.stringify({
+        test: true,
+        timestamp: new Date().toISOString()
+      })
+    });
+
+    const result = await response.json();
+    
+    if (response.ok && result.auth_verified) {
+      console.log('✅ تم الاتصال بنجاح:', result.message);
+      return { success: true, data: result };
+    } else {
+      console.error('❌ فشل الاتصال:', result);
+      return { success: false, error: result.error || 'فشل التحقق من المفتاح' };
+    }
+  } catch (err) {
+    console.error('❌ خطأ في الشبكة:', err);
+    return { success: false, error: err.message };
   }
 }
 ```
 
 ---
 
-## 4. التحقق من حالة الدفع (Check Payment Status)
-- **Endpoint:** `GET /payment-status?payment_id=pay_98231a4f`
+## 4. كود اختبار الاتصال (PHP / cURL)
 
-### الاستجابة:
-```json
-{
-  "status": "success",
-  "data": {
-    "payment_id": "pay_98231a4f",
-    "order_id": "ORD-98231",
-    "state": "CONFIRMED",
-    "amount": 150.00,
-    "received_amount": 150.00,
-    "sender_phone": "01012345678",
-    "confirmed_at": "2026-09-15T19:42:10Z"
-  }
-}
-```
-
----
-
-## 5. استقبال إشعارات الدفع (Webhook Verification)
-عند تأكيد الدفع من تطبيق الأندرويد، يُرسل النظام إشعار `POST` إلى `webhook_url` المسجل لديك.
-
-### ترويسة التوقيع:
-- `X-Signature: <HMAC_SHA256_HEX>`
-
-### بيانات الـ Webhook:
-```json
-{
-  "event": "payment.confirmed",
-  "payment_id": "pay_98231a4f",
-  "order_id": "ORD-98231",
-  "amount": 150.00,
-  "method": "vodafone_cash",
-  "status": "COMPLETED",
-  "timestamp": 1789501330
-}
-```
-
-### مثال التحقق في PHP:
 ```php
 <?php
-$secret = "YOUR_WEBHOOK_SECRET";
-$payload = file_get_contents('php://input');
-$signature = $_SERVER['HTTP_X_SIGNATURE'] ?? '';
+function testNaderPayConnection(string $apiKey): array {
+    $url = 'https://hbldhnpduoczneoyfzyz.supabase.co/functions/v1/naderpay-webhook';
+    
+    $payload = json_encode([
+        'test' => true,
+        'timestamp' => date('c')
+    ]);
 
-$expected = hash_hmac('sha256', $payload, $secret);
+    $ch = curl_init($url);
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_POST           => true,
+        CURLOPT_POSTFIELDS     => $payload,
+        CURLOPT_HTTPHEADER     => [
+            'Content-Type: application/json',
+            'x-api-key: ' . $apiKey,
+            'X-Webhook-Test: true' // ← ضروري للاختبار
+        ],
+        CURLOPT_TIMEOUT        => 15
+    ]);
 
-if (hash_equals($expected, $signature)) {
-    $data = json_decode($payload, true);
-    if ($data['event'] === 'payment.confirmed') {
-        $orderId = $data['order_id'];
-        // قم بتفعيل الطلب أو شحن الرصيد للعميل هنا
-        http_response_code(200);
-        echo json_encode(["status" => "success"]);
-        exit;
-    }
-} else {
-    http_response_code(401);
-    echo "Invalid Signature";
+    $response = curl_exec($ch);
+    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+
+    $result = json_decode($response, true);
+    return [
+        'code' => $httpCode,
+        'success' => ($httpCode === 200 && ($result['auth_verified'] ?? false)),
+        'data' => $result
+    ];
 }
+
+// مثال الاستخدام:
+// $test = testNaderPayConnection('pk_97c6b2d1...:772e65e...');
+// print_r($test);
 ?>
 ```
 
-### مثال التحقق في Node.js / Express:
+---
+
+## 5. كود إرسال Webhook حقيقي (Node.js / Backend)
+
+عند تأكيد عملية دفع أو إرسال حدث حقيقي من السيرفر:
+
 ```javascript
 const crypto = require('crypto');
-const express = require('express');
-const app = express();
 
-app.post('/api/naderpay-webhook', express.raw({ type: 'application/json' }), (req, res) => {
-  const signature = req.headers['x-signature'];
-  const secret = process.env.NADERPAY_WEBHOOK_SECRET;
+async function sendNaderPayWebhook({ apiKey, webhookSecret, event, data }) {
+  const eventId = crypto.randomUUID();
+  const timestamp = Date.now().toString();
   
-  const hmac = crypto.createHmac('sha256', secret).update(req.body).digest('hex');
-  if (hmac !== signature) {
-    return res.status(401).send('Unauthorized');
-  }
+  const payload = {
+    event: event, // مثال: 'payment.created' أو 'payment.confirmed'
+    data: data,
+    timestamp: new Date().toISOString()
+  };
+  
+  const bodyString = JSON.stringify(payload);
+  
+  // توليد التوقيع الرقمي HMAC-SHA256
+  const signature = 'sha256=' + crypto
+    .createHmac('sha256', webhookSecret)
+    .update(bodyString)
+    .digest('hex');
 
-  const event = JSON.parse(req.body.toString());
-  if (event.event === 'payment.confirmed') {
-    console.log(`Order ${event.order_id} has been paid successfully!`);
-    // شحن الرصيد أو تفعيل الطلب
-  }
+  const response = await fetch('https://hbldhnpduoczneoyfzyz.supabase.co/functions/v1/naderpay-webhook', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': apiKey,
+      'X-Webhook-Event-Id': eventId,
+      'X-Webhook-Timestamp': timestamp,
+      'X-Webhook-Signature': signature
+    },
+    body: bodyString
+  });
 
-  res.status(200).json({ received: true });
-});
+  return await response.json();
+}
 ```
 
 ---
 
-## 6. حالات الطلب (Payment States)
-- `PENDING`: بانتظار تحويل العميل للرصيد.
-- `DETECTED`: تم استلام إشعار أو رسالة SMS برقم المعاملة.
-- `CONFIRMED`: تم مطابقة وتأكيد المبلغ وتحديث رصيد الحساب.
-- `EXPIRED`: انتهت مهلة السداد (15 دقيقة افتراضياً).
-- `FAILED`: فشل التحقق أو رفضت العملية.
+## 6. استجابة السيرفر المتوقعة عند النجاح (Expected Response)
+
+```json
+{
+  "received": true,
+  "test": true,
+  "auth_verified": true,
+  "message": "اتصال ناجح — NaderPay Webhook جاهز لاستقبال الأحداث",
+  "endpoint": "naderpay-webhook",
+  "timestamp": "2026-09-15T22:45:00.000Z"
+}
+```
+
+---
+
+## 7. خطوات الربط السريعة
+
+1. افتح تطبيق **NaderPay** واذهب إلى قسم **التكامل** ثم افتح تفاصيل التكامل الخاص بك.
+2. انسخ **مفتاح API** كاملاً بصيغة `pk_XXXXX:secret_XXXXX`.
+3. في إعدادات موقعك الخارجي:
+   - ضع المفتاح في خانة **API Key**.
+   - ضع نفس المفتاح في خانة **API Secret** (أو حسب بنية الموقع).
+   - ضع رابط الـ Webhook: `https://hbldhnpduoczneoyfzyz.supabase.co/functions/v1/naderpay-webhook`.
+   - ضع **Webhook Signing Secret** إذا كان متاحاً في التطبيق.
+4. اضغط **حفظ** ثم اضغط **فحص الاتصال**.
