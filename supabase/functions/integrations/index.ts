@@ -101,13 +101,51 @@ Deno.serve(async (req: Request) => {
   // GET /integrations/{id}
   if (req.method === 'GET' && pathParts.length === 1) {
     const integrationId = pathParts[0];
-    const { data } = await db.from('integrations')
-      .select('*, api_credentials(id, key_id, status, environment, hmac_enabled, last_used_at), webhook_endpoints(*)')
+
+    // جلب التكامل الأساسي
+    const { data: intRow } = await db.from('integrations')
+      .select('id, name, type, website_url, environment, status, last_activity_at, created_at, updated_at, enabled_events, api_credential_id, webhook_endpoint_id')
       .eq('id', integrationId)
       .eq('account_id', account_id)
       .maybeSingle();
-    if (!data) return jsonErr('NOT_FOUND', 'التكامل غير موجود', 404, request_id);
-    return jsonOk({ integration: data });
+    if (!intRow) return jsonErr('NOT_FOUND', 'التكامل غير موجود', 404, request_id);
+
+    // جلب api_credentials + webhook_endpoints منفصلاً (تفادي مشكلة FK→object بدل array)
+    const [{ data: creds }, { data: endpoints }, { data: requests }] = await Promise.all([
+      intRow.api_credential_id
+        ? db.from('api_credentials').select('id, key_id, status, environment, hmac_enabled, last_used_at, scopes').eq('id', intRow.api_credential_id)
+        : Promise.resolve({ data: [] }),
+      intRow.webhook_endpoint_id
+        ? db.from('webhook_endpoints').select('id, url, status, events, auth_mode, health_status, last_test_at, timeout_seconds').eq('id', intRow.webhook_endpoint_id)
+        : Promise.resolve({ data: [] }),
+      // آخر 20 طلب دفع مرتبطة بهذا الحساب
+      db.from('payment_requests')
+        .select('id, status, amount, currency, external_reference, created_at, updated_at, reason_code')
+        .eq('account_id', account_id)
+        .order('created_at', { ascending: false })
+        .limit(20),
+    ]);
+
+    // إحصاء الطلبات حسب الحالة
+    const allReqs = requests ?? [];
+    const stats = {
+      total: allReqs.length,
+      confirmed: allReqs.filter((r: Record<string,unknown>) => r.status === 'CONFIRMED').length,
+      rejected: allReqs.filter((r: Record<string,unknown>) => r.status === 'REJECTED').length,
+      pending: allReqs.filter((r: Record<string,unknown>) => r.status === 'CREATED').length,
+      cancelled: allReqs.filter((r: Record<string,unknown>) => r.status === 'CANCELLED').length,
+      expired: allReqs.filter((r: Record<string,unknown>) => r.status === 'EXPIRED').length,
+    };
+
+    return jsonOk({
+      integration: {
+        ...intRow,
+        api_credentials: creds ?? [],
+        webhook_endpoints: endpoints ?? [],
+      },
+      recent_requests: allReqs,
+      request_stats: stats,
+    });
   }
 
   // ── All POST requests: read body ONCE, then dispatch by action/path ──
