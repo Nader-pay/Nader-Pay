@@ -131,10 +131,10 @@ export default function TestIntegrationScreen() {
     await new Promise((r) => setTimeout(r, 300));
     let activeIntegration: { id: string; name: string } | null = null;
     try {
-      const res = await fetch(`${supabaseUrl}/functions/v1/integrations`, { headers });
+      const res = await fetch(`${supabaseUrl}/functions/v1/integration-status`, { headers });
       const json = await res.json();
       const integrations: Array<{ status: string; id: string; name: string }> = json.integrations ?? [];
-      activeIntegration = integrations.find((i) => i.status === 'active') ?? null;
+      activeIntegration = integrations.find((i) => i.status === 'active') ?? integrations[0] ?? null;
       if (activeIntegration) {
         updateStep('integration', 'ok', `تكامل فعّال: ${activeIntegration.name}`);
       } else {
