@@ -34,20 +34,24 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v2
-
-      - name: Accept all Android SDK licenses
-        run: yes | sdkmanager --licenses || true
-
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Install Android build-tools (aapt2, apksigner, zipalign)
+      - name: Setup Android SDK (use pre-installed + accept licenses)
         run: |
-          yes | sdkmanager --install "build-tools;34.0.0" || true
-          echo "ANDROID_BUILD_TOOLS=$ANDROID_HOME/build-tools/34.0.0" >> "$GITHUB_ENV"
-          echo "$ANDROID_HOME/build-tools/34.0.0" >> "$GITHUB_PATH"
+          # الـ runner عنده ANDROID_HOME جاهز — بس محتاجين نقبل الـ licenses ونثبّت build-tools
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          # قبول كل الـ licenses
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses 2>/dev/null || \
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses 2>/dev/null || true
+          # تثبيت build-tools 34 لو مش موجود
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "build-tools;34.0.0" "platform-tools" "platforms;android-34" 2>/dev/null || true
+          # تحقق من وجود aapt2
+          ls "$ANDROID_HOME/build-tools/" || true
+          BT=$(ls "$ANDROID_HOME/build-tools/" | sort -V | tail -1)
+          echo "Using build-tools: $BT"
+          echo "ANDROID_BUILD_TOOLS=$ANDROID_HOME/build-tools/$BT" >> "$GITHUB_ENV"
+          echo "$ANDROID_HOME/build-tools/$BT" >> "$GITHUB_PATH"
           echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
 
       - name: Install dependencies
