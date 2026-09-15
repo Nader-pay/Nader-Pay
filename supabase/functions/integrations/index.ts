@@ -83,7 +83,11 @@ Deno.serve(async (req: Request) => {
   const { user, account_id, db } = auth;
 
   const url = new URL(req.url);
-  const pathParts = url.pathname.replace(/^\/integrations\/?/, '').split('/').filter(Boolean);
+  // pathname مثال: /functions/v1/integrations أو /functions/v1/integrations/abc123/rotate-secret
+  const pathParts = url.pathname
+    .replace(/^\/functions\/v1\/integrations\/?/, '')
+    .replace(/^\/integrations\/?/, '')
+    .split('/').filter(Boolean);
 
   // GET /integrations
   if (req.method === 'GET' && pathParts.length === 0) {

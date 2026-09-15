@@ -29,20 +29,38 @@ Deno.serve(async (req: Request) => {
   if (auth.error) return jsonErr(auth.error, 'يجب تسجيل الدخول', 401, request_id);
   const { account_id, db } = auth;
 
-  // جلب جميع integrations مع بياناتها المرتبطة
-  const { data: integrations, error: intErr } = await db
+  // جلب جميع integrations (بدون nested joins — يُجلب منفصلاً لتفادي مشكلة FK→object)
+  const { data: rawIntegrations, error: intErr } = await db
     .from('integrations')
-    .select(`
-      id, name, type, website_url, environment, status, last_activity_at,
-      created_at, updated_at, enabled_events,
-      api_credential_id, webhook_endpoint_id,
-      api_credentials(id, key_id, status, environment, last_used_at, hmac_enabled, scopes),
-      webhook_endpoints(id, url, status, events, auth_mode, health_status, last_test_at)
-    `)
+    .select('id, name, type, website_url, environment, status, last_activity_at, created_at, updated_at, enabled_events, api_credential_id, webhook_endpoint_id')
     .eq('account_id', account_id)
     .order('created_at', { ascending: false });
 
   if (intErr) return jsonErr('DB_ERROR', intErr.message, 500, request_id);
+
+  // جلب api_credentials و webhook_endpoints منفصلاً لضمان إرجاع arrays صحيحة
+  const credIds = (rawIntegrations ?? []).map((i: Record<string,unknown>) => i.api_credential_id).filter(Boolean);
+  const endpointIds = (rawIntegrations ?? []).map((i: Record<string,unknown>) => i.webhook_endpoint_id).filter(Boolean);
+
+  const [{ data: allCreds }, { data: allEndpoints }] = await Promise.all([
+    credIds.length > 0
+      ? db.from('api_credentials').select('id, key_id, status, environment, last_used_at, hmac_enabled, scopes').in('id', credIds)
+      : Promise.resolve({ data: [] }),
+    endpointIds.length > 0
+      ? db.from('webhook_endpoints').select('id, url, status, events, auth_mode, health_status, last_test_at').in('id', endpointIds)
+      : Promise.resolve({ data: [] }),
+  ]);
+
+  // دمج البيانات يدوياً: كل integration يحصل على api_credentials[] و webhook_endpoints[]
+  const integrations = (rawIntegrations ?? []).map((int: Record<string,unknown>) => {
+    const cred = (allCreds ?? []).find((c: Record<string,unknown>) => c.id === int.api_credential_id);
+    const endpoint = (allEndpoints ?? []).find((e: Record<string,unknown>) => e.id === int.webhook_endpoint_id);
+    return {
+      ...int,
+      api_credentials: cred ? [cred] : [],
+      webhook_endpoints: endpoint ? [endpoint] : [],
+    };
+  });
 
   // إجمالي طلبات الدفع
   const { count: totalRequests } = await db
