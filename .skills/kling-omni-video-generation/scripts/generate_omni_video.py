@@ -43,11 +43,11 @@ def parse_args():
         "--image-url", dest="image_url", action="append",
         default=[], help="URL of a reference image (repeatable)"
     )
-    p.add_argument("--model", default="kling-v2", help="model name (default: kling-v2)")
+    p.add_argument("--model", default="kling-v3-omni", choices=["kling-v3-omni"], help="O3 / Kling V3 Omni (only supported model)")
     p.add_argument("--aspect-ratio", dest="aspect_ratio", help="aspect ratio, e.g. 16:9, 1:1")
     p.add_argument("--duration", choices=["5", "10"], help="video duration in seconds")
     p.add_argument("--cfg-scale", dest="cfg_scale", type=float, help="prompt adherence [0, 1]")
-    p.add_argument("--mode", help="generation mode, e.g. std or pro")
+    p.add_argument("--mode", default="pro", choices=["std", "pro", "4k"], help="std=720P, pro=1080P (default), 4k=4K; availability depends on the scenario")
     p.add_argument("--output-dir", dest="output_dir", help="output directory for result videos")
     return p.parse_args()
 

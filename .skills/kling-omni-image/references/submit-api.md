@@ -65,59 +65,23 @@ Submit an Omni-Image image generation task. Supports text prompts, reference ima
 
 ## Generation-time Usage (Agent Direct Call)
 
-```typescript
-const apiKey = process.env["INTEGRATIONS_API_KEY"]!; // platform_managed key injected by the platform
+Use the built-in script for generation-time calls — do not hand-write TypeScript request code. Bash tool timeout must be set to `600000` ms.
 
-interface SubmitParams {
-  prompt: string;
-  model_name?: "kling-image-o1" | "kling-v3-omni";
-  image_list?: Array<{ image: string }>; // URL or raw Base64 (no prefix)
-  element_list?: Array<{ element_id: number }>;
-  resolution?: "1k" | "2k";
-  result_type?: "single" | "series";
-  n?: number; // [1, 9]
-  series_amount?: number; // [2, 9], only pass when result_type=series
-  aspect_ratio?: "16:9" | "9:16" | "1:1" | "4:3" | "3:4" | "3:2" | "2:3" | "21:9" | "auto";
-  watermark_info?: { enabled: boolean };
-  callback_url?: string;
-  external_task_id?: string;
-}
-
-interface SubmitResult {
-  task_id: string;
-  task_status: string;
-  created_at: number;
-}
-
-async function submitOmniImageTask(params: SubmitParams): Promise<SubmitResult> {
-  // Enforce series_amount constraint
-  if (params.result_type === "single" && "series_amount" in params) {
-    throw new Error("series_amount must NOT be provided when result_type is 'single'");
-  }
-  if (params.result_type === "series" && !params.series_amount) {
-    throw new Error("series_amount is required when result_type is 'series'");
-  }
-
-  const response = await fetch(
-    "https://app-dz8miw66l2wx-api-2Y00Vzbe0MBY.gateway.appmedo.com/v1/images/omni-image",
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Gateway-Authorization": `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify(params),
-    }
-  );
-
-  if (!response.ok) throw new Error(`HTTP error: ${response.status}`);
-
-  const json = await response.json();
-  if (json.code !== 0) throw new Error(`API error ${json.code}: ${json.message}`);
-
-  return json.data;
-}
+```bash
+python3 <skill-path>/scripts/generate_omni_image.py \
+  --prompt "..." \
+  [--negative-prompt "..."] \
+  [--image /path/a.jpg --image /path/b.jpg] \
+  [--image-url "https://..."] \
+  [--model kling-v2] \
+  [--aspect-ratio 16:9] \
+  [--resolution 2k] \
+  [-n 1] \
+  [--mode single] \
+  [--output-dir /tmp/out]
 ```
+
+The script submits the task, polls until it succeeds/fails/exceeds the safe time limit, and prints one JSON line to stdout: `{"status":"succeed","task_id":"...","images":[{"url":"...","file":"..."}]}` or `{"status":"processing","task_id":"..."}`. On failure it prints an error to stderr and exits with a non-zero code.
 
 ---
 

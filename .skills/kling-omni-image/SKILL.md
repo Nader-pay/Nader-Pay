@@ -24,65 +24,40 @@ Based on Kling AI's Omni-Image model, supports generating high-quality images vi
 
 ## Complete Async Workflow
 
-```typescript
-const apiKey = process.env["INTEGRATIONS_API_KEY"]!;
+Use the built-in scripts for generation-time calls. The scripts read `INTEGRATIONS_API_KEY` from the environment.
 
-async function generateOmniImage(params: SubmitParams): Promise<ImageResult[]> {
-  // Step 1: Submit task
-  const submitResp = await fetch("https://app-dz8miw66l2wx-api-2Y00Vzbe0MBY.gateway.appmedo.com/v1/images/omni-image", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-Gateway-Authorization": `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify(params),
-  });
+**The Bash tool timeout MUST be set to 600000ms (600 seconds).**
 
-  if (!submitResp.ok) throw new Error(`Submit HTTP error: ${submitResp.status}`);
-  const submitJson = await submitResp.json();
-  if (submitJson.code !== 0) throw new Error(`Submit API error ${submitJson.code}: ${submitJson.message}`);
+**Submit + poll (all-in-one):**
 
-  const taskId: string = submitJson.data.task_id;
+```bash
+# Text-to-image
+python3 <skill-path>/scripts/generate_omni_image.py \
+  --prompt "A fantasy landscape with dragons" \
+  --aspect-ratio 16:9 \
+  --resolution 2k \
+  -n 1 \
+  --output-dir /tmp/omni_images
 
-  // Step 2: Poll until done
-  const POLL_INTERVAL_MS = 7000;
-  const TIMEOUT_MS = 10 * 60 * 1000;
-  const deadline = Date.now() + TIMEOUT_MS;
-
-  while (Date.now() < deadline) {
-    await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
-
-    const queryResp = await fetch(
-      `https://app-dz8miw66l2wx-api-n9QVxo8blgrL.gateway.appmedo.com/v1/images/omni-image/${taskId}`,
-      {
-        method: "GET",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Gateway-Authorization": `Bearer ${apiKey}`,
-        },
-      }
-    );
-
-    if (!queryResp.ok) throw new Error(`Query HTTP error: ${queryResp.status}`);
-    const queryJson = await queryResp.json();
-    if (queryJson.code !== 0) throw new Error(`Query API error ${queryJson.code}: ${queryJson.message}`);
-
-    const status: string = queryJson.data.task_status;
-
-    if (status === "succeed") {
-      const result = queryJson.data.task_result;
-      // Return images array (single mode) or series_images (series mode)
-      return result.images?.length > 0 ? result.images : result.series_images ?? [];
-    }
-    if (status === "failed") {
-      throw new Error(`Task failed: ${queryJson.data.task_status_msg}`);
-    }
-    // submitted / processing → keep polling
-  }
-
-  throw new Error(`Task ${taskId} timed out after 10 minutes`);
-}
+# With reference images
+python3 <skill-path>/scripts/generate_omni_image.py \
+  --prompt "Same style as <<<1>>>" \
+  --image /path/to/ref1.jpg \
+  --image-url "https://example.com/ref2.png" \
+  --output-dir /tmp/omni_images
 ```
+
+**Resume polling an existing task:**
+
+```bash
+python3 <skill-path>/scripts/query_omni_image.py --task-id "<task_id>" --output-dir /tmp/omni_images
+```
+
+The scripts print one JSON line:
+- On success: `{"status":"succeed","task_id":"...","images":[{"url":"...","file":"..."}]}`
+- If still processing: `{"status":"processing","task_id":"..."}`
+
+On failure they print an error to stderr and exit with a non-zero code.
 
 **Important constraints (must be followed):**
 - When `result_type = single`: the `series_amount` field **must NOT appear** in the request body
@@ -93,19 +68,13 @@ async function generateOmniImage(params: SubmitParams): Promise<ImageResult[]> {
 
 ## Generation-time File Download (Required)
 
-The URLs returned by the generation API are temporary CDN links that expire after 30 days. During generation time (Agent direct call scenario), after obtaining a URL, **you must immediately use the Bash tool to download the file locally** so the user can view the result.
+Image URLs are temporary CDN links (expire after 30 days). If `--output-dir` is not passed to the script, download immediately:
 
 ```bash
 curl -L -o <local-path>.jpg "<generated image URL>"
 ```
 
-**Complete generation-time workflow (including download step):**
-
-1. Call `generateOmniImage()` to execute the submit → poll loop and obtain the list of image URLs
-2. For each image, use the Bash tool to run `curl -L -o <local-path> "<url>"` to download the file locally
-3. Notify the user of the file paths where images have been saved
-
-> **Note**: Upstream CDN links expire after 30 days. Download immediately after obtaining the URL — do not delay.
+> For detailed parameter descriptions, see `references/submit-api.md` (submit) and `references/query-api.md` (query).
 
 ---
 

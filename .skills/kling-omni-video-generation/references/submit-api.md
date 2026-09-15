@@ -18,7 +18,7 @@
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `model_name` | `string` | No | Model name; default `kling-v3-omni`; allowed value: `kling-v3-omni` |
+| `model_name` | `string` | No | Only O3 / Kling V3 Omni (`kling-v3-omni`). This skill always sends this value explicitly, including when the client omits it; do not rely on the upstream default |
 | `multi_shot` | `boolean` | No | Whether to generate a multi-shot video; default `false` |
 | `shot_type` | `string` | No | Storyboard type; enum value: `customize`; required when `multi_shot` is `true` |
 | `prompt` | `string` | No | Text prompt; max 2500 characters; supports template format (e.g. `<<<image_1>>>`); required when `multi_shot` is `false` |
@@ -27,7 +27,7 @@
 | `element_list` | `array` | No | Reference element list based on element library IDs |
 | `video_list` | `array` | No | Reference video list; supports MP4/MOV; ≥3 seconds; ≤200 MB; resolution 720–2160 px |
 | `sound` | `string` | No | Whether to generate audio; enum value: `on`; default `on` |
-| `mode` | `string` | No | Generation mode; enum value: `pro`; default `pro` |
+| `mode` | `string` | No | Output resolution: `std`=720P, `pro`=1080P (default), `4k`=4K. Availability depends on the model scenario and overseas endpoint; do not silently downgrade |
 | `aspect_ratio` | `string` | No | Video aspect ratio; enum values: `16:9`, `9:16`, `1:1` |
 | `duration` | `string` | No | Video duration in seconds; enum values: `3`–`15`; default `5` |
 | `watermark_info` | `object` | No | Watermark configuration containing an `enabled` boolean field |
@@ -78,11 +78,11 @@ python3 <skill-path>/scripts/generate_omni_video.py \
   [--negative-prompt "..."] \
   [--image /path/ref.jpg] \
   [--image-url "https://..."] \
-  [--model kling-v2] \
+  [--model kling-v3-omni] \
   [--aspect-ratio 16:9] \
   [--duration 5] \
   [--cfg-scale 0.5] \
-  [--mode pro] \
+  [--mode std|pro|4k] \
   [--output-dir /tmp/out]
 ```
 
@@ -107,6 +107,16 @@ serve(async (req: Request): Promise<Response> => {
   let requestBody: Record<string, unknown>;
   try {
     requestBody = await req.json();
+    const model = requestBody.model_name ?? "kling-v3-omni";
+    const mode = requestBody.mode ?? "pro";
+    if (model !== "kling-v3-omni") {
+      throw new Error("This skill supports only O3 / Kling V3 Omni (kling-v3-omni)");
+    }
+    if (!["std", "pro", "4k"].includes(mode as string)) {
+      throw new Error("Select 720P (std), 1080P (pro), or 4K (4k)");
+    }
+    requestBody.model_name = model;
+    requestBody.mode = mode;
     // Validate: single-shot requires prompt; multi-shot requires multi_prompt
     if (!requestBody.multi_shot && !requestBody.prompt) {
       throw new Error("Missing prompt (required for single-shot mode)");

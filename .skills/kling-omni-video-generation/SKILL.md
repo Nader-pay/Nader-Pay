@@ -8,7 +8,7 @@ license: MIT
 
 ## Overview
 
-Generate videos using the Kling AI Omni model, supporting text-to-video, image-to-video, video editing, video reference, and multi-shot storyboard modes. Uses an asynchronous task pattern: submit a task to obtain a `task_id`, then poll the query endpoint until completion.
+Generate videos using only O3 / Kling V3 Omni (`kling-v3-omni`), supporting text-to-video, image-to-video, video editing, video reference, and multi-shot storyboard modes. Uses an asynchronous task pattern: submit a task to obtain a `task_id`, then poll the query endpoint until completion.
 
 | Property | Value |
 |----------|-------|
@@ -118,3 +118,13 @@ curl -L -o /tmp/generated_omni_video.mp4 "<task_result.videos[0].url>"
 In the application, proxy requests through two separate Edge Functions: one for submitting tasks and one for querying status. The query Edge Function transfers the video URL to Supabase Storage once the task is complete, returning a persistent public URL to the frontend.
 
 > For complete Edge Function code and frontend call patterns, see the "Post-generation Usage" sections in `references/submit-api.md` and `references/query-api.md`.
+
+
+## Fixed Model and Resolution (Required for Generated Apps)
+
+- Expose only O3 / Kling V3 Omni. Always send `model_name: "kling-v3-omni"`; show a fixed model label instead of a model switcher.
+- The server fills the same model when omitted and rejects any other model before calling upstream. The CLI accepts only `--model kling-v3-omni` and defaults to it.
+- Offer 720P, 1080P and 4K, mapped to top-level `mode: "std"`, `"pro"` and `"4k"`. Default to `pro`; do not send the newer protocol's `settings.resolution`.
+- Show resolution and scenario limitations beside the generation controls. Report upstream rejection accurately; never silently downgrade or automatically create another billed task.
+- Verification boundary: the Beijing endpoint produced 3840×2160 for an O3 + feature-reference-video + 4K test. This is not a live verification of the Singapore endpoint or base-video editing.
+- Validate default O3/pro, all three mode mappings, invalid-model rejection and unchanged overseas endpoint IDs. A submitted task is not a successful render; confirm terminal success and the actual output dimensions.
