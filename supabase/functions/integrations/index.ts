@@ -182,6 +182,47 @@ Deno.serve(async (req: Request) => {
 
     const bodyAction = String(body.action ?? '').trim();
 
+    // POST /integrations — action: update-webhook / add-webhook
+    if (pathParts.length === 0 && (bodyAction === 'update-webhook' || bodyAction === 'update_webhook' || bodyAction === 'add-webhook')) {
+      const webhookUrl = String(body.url ?? '').trim();
+      const endpointValidation = await validateEndpoint(webhookUrl);
+      if (!endpointValidation.ok) return jsonErr('VALIDATION_ERROR', endpointValidation.message, 422, request_id);
+
+      // جلب التكامل الحالي أو إنشاؤه
+      let { data: firstInt } = await db.from('integrations')
+        .select('id, webhook_endpoint_id')
+        .eq('account_id', account_id)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      const newSecret = generateWebhookSecret();
+      const secretHash = await hashWebhookSecret(newSecret);
+
+      if (firstInt?.webhook_endpoint_id) {
+        await db.from('webhook_endpoints').update({
+          url: webhookUrl,
+          status: 'active',
+          updated_at: new Date().toISOString(),
+        }).eq('id', firstInt.webhook_endpoint_id).eq('account_id', account_id);
+      } else {
+        const { data: newEp } = await db.from('webhook_endpoints').insert({
+          account_id,
+          integration_id: firstInt?.id ?? null,
+          url: webhookUrl,
+          status: 'active',
+          events: ALL_EVENTS,
+          secret: '[stored-encrypted]',
+        }).select('id').single();
+
+        if (firstInt && newEp) {
+          await db.from('integrations').update({ webhook_endpoint_id: newEp.id }).eq('id', firstInt.id);
+        }
+      }
+
+      return jsonOk({ success: true, message: 'تم حفظ وتحديث Webhook بنجاح' });
+    }
+
     // POST /integrations — action: rotate_secret
     if (pathParts.length === 0 && (bodyAction === 'rotate_secret' || bodyAction === 'rotate-secret')) {
       const integrationId = String(body.integration_id ?? '');

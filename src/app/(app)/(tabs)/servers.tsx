@@ -95,6 +95,14 @@ export default function ServersScreen() {
         </Pressable>
       </View>
 
+      {/* تنويه إرشادي للمستخدم */}
+      <View className="mx-5 mb-4 p-4 rounded-2xl bg-blue-50 border border-blue-200">
+        <Text className="text-xs font-semibold text-blue-900 mb-1">ℹ️ ملاحظة هامة حول الخوادم:</Text>
+        <Text className="text-xs text-blue-700 leading-5">
+          تكامل موقعك الإلكتروني يعمل سحابياً عبر NaderPay Cloud تلقائياً وبشكل كامل. هذا القسم اختياري فقط لأصحاب السيرفرات المخصصة والوسطاء (Custom Proxies) ولا تحتاجه لعمليات الموقع العادية.
+        </Text>
+      </View>
+
       {loading ? (
         <View className="flex-1 items-center justify-center">
           <ActivityIndicator size="large" className="text-muted-foreground" />
